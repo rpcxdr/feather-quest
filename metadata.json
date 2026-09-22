@@ -1,0 +1,6 @@
+{
+  "name": "Feather Quest 3D: Tap to Flap",
+  "description": "A 3D cinematic one-tap arcade flight game with dynamic curving flight paths, voxel blocks world terrain, ability totems (speed and immunity), and movie-like tracking camera angles.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
