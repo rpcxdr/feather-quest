@@ -52,8 +52,6 @@ export const TerrainMapCanvas: React.FC<TerrainMapCanvasProps> = ({
     const imgData = offCtx.createImageData(gridW, gridH);
     const data = imgData.data;
 
-    const canyonBiome = biomeRegistry.getByChar('C');
-    const canyonLowBiome = biomeRegistry.getByChar('c');
     const mountainBiome = biomeRegistry.getByChar('M');
     const mountainLowBiome = biomeRegistry.getByChar('m');
 
@@ -86,7 +84,7 @@ export const TerrainMapCanvas: React.FC<TerrainMapCanvasProps> = ({
                 x: worldX,
                 z: worldZ,
                 h,
-                distToBranch: Math.abs(worldX),
+                distToBranch: 100.0, // Natural terrain surface (avoids artificial 3D pillar foundation/cobblestone artifacts along centerline)
                 blockNoise: 0,
                 bx: Math.floor(worldX),
                 bz: Math.floor(worldZ),
@@ -107,22 +105,6 @@ export const TerrainMapCanvas: React.FC<TerrainMapCanvasProps> = ({
           totalR = 0.35;
           totalG = 0.58;
           totalB = 0.18;
-        }
-
-        // Smooth Canyon river corridor blending
-        const canyonWeight =
-          (canyonBiome ? weights.biomeWeights?.get(canyonBiome) || 0 : 0) +
-          (canyonLowBiome ? weights.biomeWeights?.get(canyonLowBiome) || 0 : 0);
-
-        if (canyonWeight > 0.01) {
-          const absX = Math.abs(worldX);
-          if (absX < 9.0) {
-            const riverFactor = canyonWeight * Math.max(0, 1.0 - absX / 9.0);
-            const riverT = riverFactor * riverFactor * (3.0 - 2.0 * riverFactor);
-            totalR = totalR * (1 - riverT) + 0.08 * riverT;
-            totalG = totalG * (1 - riverT) + 0.38 * riverT;
-            totalB = totalB * (1 - riverT) + 0.68 * riverT;
-          }
         }
 
         // Smooth Mountain snow peaks blending
