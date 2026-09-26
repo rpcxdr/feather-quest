@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { flightPath, PathFrame } from './pathGenerator';
 import { CameraAngle, ObstacleData } from '../types';
+import { WATER_LEVEL } from '../biomes';
 
 export interface CameraShotConfig {
   name: string;
@@ -371,7 +372,11 @@ export class CinematicCameraDirector {
     const hX2 = flightPath.getTerrainHeight(pos.x - probeRadius, pos.z);
     const hZ1 = flightPath.getTerrainHeight(pos.x, pos.z + probeRadius);
     const hZ2 = flightPath.getTerrainHeight(pos.x, pos.z - probeRadius);
-    const maxLocalTerrainH = Math.max(hCenter, hX1, hX2, hZ1, hZ2);
+    let maxLocalTerrainH = Math.max(hCenter, hX1, hX2, hZ1, hZ2);
+    const weightsCenter = flightPath.getBiomeWeights(pos.x, pos.z);
+    if (hCenter < WATER_LEVEL || weightsCenter.primary === 'SHALLOW_WATERS' || weightsCenter.primary === 'DEEP_WATERS') {
+      maxLocalTerrainH = Math.max(maxLocalTerrainH, WATER_LEVEL);
+    }
 
     const minClearance = 1.5; // Minimum clearance above terrain surface in meters
     const softCushion = 1.2;  // Soft upward repulsion cushion zone
@@ -426,7 +431,11 @@ export class CinematicCameraDirector {
     const hX2 = flightPath.getTerrainHeight(pos.x - probeRadius, pos.z);
     const hZ1 = flightPath.getTerrainHeight(pos.x, pos.z + probeRadius);
     const hZ2 = flightPath.getTerrainHeight(pos.x, pos.z - probeRadius);
-    const maxLocalTerrainH = Math.max(hCenter, hX1, hX2, hZ1, hZ2);
+    let maxLocalTerrainH = Math.max(hCenter, hX1, hX2, hZ1, hZ2);
+    const weightsCenter = flightPath.getBiomeWeights(pos.x, pos.z);
+    if (hCenter < WATER_LEVEL || weightsCenter.primary === 'SHALLOW_WATERS' || weightsCenter.primary === 'DEEP_WATERS') {
+      maxLocalTerrainH = Math.max(maxLocalTerrainH, WATER_LEVEL);
+    }
 
     const absoluteMinY = maxLocalTerrainH + 1.2;
     if (pos.y < absoluteMinY) {
@@ -558,7 +567,12 @@ export class CinematicCameraDirector {
         )
       );
 
-      const orbitLook = birdPos.clone().add(new THREE.Vector3(0, 0.4, 0));
+      // If bird is submerged below water level, keep camera comfortably above the water surface looking down
+      if (birdPos.y < WATER_LEVEL) {
+        orbitPos.y = Math.max(orbitPos.y, WATER_LEVEL + 2.2);
+      }
+
+      const orbitLook = birdPos.clone().add(new THREE.Vector3(0, 0.3, 0));
 
       this.currentPos.lerp(orbitPos, delta * 2.5);
       this.currentLookAt.lerp(orbitLook, delta * 3.5);

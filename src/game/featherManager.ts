@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { CrashRecord, CrashType, PillarCrashZone, CrashInfo, ObstacleData } from '../types';
 import { flightPath } from './pathGenerator';
+import { WATER_LEVEL } from '../biomes';
 
 const STORAGE_KEY = 'feather3d_prior_crashes';
 const MAX_STORED_CRASHES = 120;
@@ -458,11 +459,11 @@ export class FeatherManager {
       : (Math.random() < 0.5 ? -0.4 : 0.4);
 
     const shiftedPos = new THREE.Vector3(posX, 0, posZ).addScaledVector(frame.right, lateralShift);
-    const groundY = flightPath.getTerrainHeight(shiftedPos.x, shiftedPos.z);
+    const rawGroundY = flightPath.getTerrainHeight(shiftedPos.x, shiftedPos.z);
+    const groundY = Math.max(rawGroundY, WATER_LEVEL);
 
-    // Embed quill base ~0.12m into the ground so it appears firmly stuck in turf/rock
-    // The insertion point (0,0,0) at the base of the feather has the 0.4m left/right shift applied
-    feather.position.set(shiftedPos.x, groundY - 0.12, shiftedPos.z);
+    // Embed quill base ~0.12m into the ground/water surface
+    feather.position.set(shiftedPos.x, groundY - (rawGroundY < WATER_LEVEL ? 0.02 : 0.12), shiftedPos.z);
 
     const DEG_30 = (30 * Math.PI) / 180; // ~0.5236 rad (30 degrees)
 

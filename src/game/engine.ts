@@ -11,6 +11,7 @@ import { RingEffectManager } from './ringEffectManager';
 import { TotemTimerBar } from './totemTimerBar';
 import { getMapTileCoord } from './mapTile';
 import { flightPathHistory, getEnteredStartTiles } from './flightPathHistory';
+import { WATER_LEVEL } from '../biomes';
 
 export interface GameEngineCallbacks {
   onStateChange: (state: GameState) => void;
@@ -74,6 +75,17 @@ export class GameEngine {
   private readonly gravity: number = 19.5;
   private readonly flapImpulse: number = 7.2;
   private readonly terminalVelocity: number = -12.5;
+
+  // Game Over crash bounce physics
+  private isPillarBounce: boolean = false;
+  private pillarBounceDirection: number = 0; // -1 for backward, +1 for forward
+  private pillarBounceDistanceTarget: number = 3.2; // clearance past 2x2 column + 4x4 base blocks
+  private pillarBounceDistanceTraveled: number = 0;
+  private pillarBounceVelocityZ: number = 0;
+  private pillarBounceVelocityX: number = 0;
+  private pillarBounceVelocityY: number = 0;
+  private hitColumnCenter: { x: number; z: number } | null = null;
+  private isBirdGrounded: boolean = false;
 
   // Callbacks
   private callbacks: GameEngineCallbacks;
@@ -261,6 +273,15 @@ export class GameEngine {
     }
     this.speedTimeRemaining = 0;
     this.immunityTimeRemaining = 0;
+    this.isPillarBounce = false;
+    this.pillarBounceDirection = 0;
+    this.pillarBounceDistanceTarget = 0;
+    this.pillarBounceDistanceTraveled = 0;
+    this.pillarBounceVelocityZ = 0;
+    this.pillarBounceVelocityX = 0;
+    this.pillarBounceVelocityY = 0;
+    this.hitColumnCenter = null;
+    this.isBirdGrounded = false;
     this.isNewHighScoreRun = false;
     if (this.totemTimerBar) {
       this.totemTimerBar.reset();
@@ -396,7 +417,7 @@ export class GameEngine {
     this.callbacks.onStatsUpdate({
       score: this.score,
       highScore: this.state === 'GAMEOVER' ? Math.max(this.score, this.highScore) : this.highScore,
-      distance: Math.floor(this.pathDistance),
+      distance: Math.max(0, Math.floor(this.pathDistance - this.startDistance)),
       flapsCount: this.flapsCount,
       airTime: Math.floor(this.airTime),
       isNewHigh,
@@ -429,6 +450,48 @@ export class GameEngine {
     }
     this.bird.setBuffEffects(false, false);
 
+    // Pillar collision bounce heuristic:
+    // Compare the z position of the bird when it hits and the z position of the base of the column.
+    // If bird z <= column base z: bounce backward a couple meters before it falls.
+    // If bird z > column base z: bounce forward.
+    this.isBirdGrounded = false;
+    if (crashInfo?.type === 'PILLAR' && crashInfo.hitObstacle) {
+      const birdPos = this.bird.group.position;
+      const obs = crashInfo.hitObstacle;
+      const colX = obs.gateGroup ? obs.gateGroup.position.x : birdPos.x;
+      let colZ = obs.gateGroup ? obs.gateGroup.position.z : obs.pathDistance;
+      let columnBaseZ = colZ;
+      if (obs.baseMesh) {
+        const worldPos = new THREE.Vector3();
+        obs.baseMesh.getWorldPosition(worldPos);
+        columnBaseZ = worldPos.z;
+        colZ = worldPos.z;
+      }
+
+      this.hitColumnCenter = { x: colX, z: colZ };
+      this.isPillarBounce = true;
+      this.pillarBounceDirection = birdPos.z <= columnBaseZ ? -1 : 1;
+
+      // Ensure clearance target places bird at least 3.2m away from the column center
+      const targetZ = colZ + this.pillarBounceDirection * 3.2;
+      this.pillarBounceDistanceTarget = Math.max(2.8, Math.abs(targetZ - birdPos.z));
+      this.pillarBounceDistanceTraveled = 0;
+      this.pillarBounceVelocityZ = this.pillarBounceDirection * 9.5;
+
+      const dx = birdPos.x - colX;
+      this.pillarBounceVelocityX = Math.abs(dx) > 0.1 ? Math.sign(dx) * 1.8 : 0;
+      this.pillarBounceVelocityY = 3.8;
+    } else {
+      this.hitColumnCenter = null;
+      this.isPillarBounce = false;
+      this.pillarBounceDirection = 0;
+      this.pillarBounceDistanceTarget = 0;
+      this.pillarBounceDistanceTraveled = 0;
+      this.pillarBounceVelocityZ = 0;
+      this.pillarBounceVelocityX = 0;
+      this.pillarBounceVelocityY = 0;
+    }
+
     // Check if player set a new all-time flight record
     if (this.recordHorizonManager) {
       const beatRecord = this.recordHorizonManager.saveRecordIfBeaten(this.pathDistance);
@@ -444,12 +507,20 @@ export class GameEngine {
     } else {
       const birdPos = this.bird.group.position;
       const terrainH = flightPath.getTerrainHeight(birdPos.x, birdPos.z);
+      const weights = flightPath.getBiomeWeights(birdPos.x, birdPos.z);
+      const isWater =
+        (weights.waterDeep || 0) > 0.001 ||
+        (weights.waterShallow || 0) > 0.001 ||
+        weights.primary === 'SHALLOW_WATERS' ||
+        weights.primary === 'DEEP_WATERS' ||
+        terrainH < WATER_LEVEL;
+      const surfaceH = isWater ? Math.max(terrainH, WATER_LEVEL) : terrainH;
       this.environment.featherManager.recordCrash({
         type: 'TERRAIN',
         distance: this.pathDistance,
         branch: this.activeBranch,
         lateralOffset: this.currentBranchOffset,
-        worldPos: { x: birdPos.x, y: terrainH, z: birdPos.z },
+        worldPos: { x: birdPos.x, y: surfaceH, z: birdPos.z },
       });
     }
 
@@ -477,16 +548,18 @@ export class GameEngine {
       soundManager.playHighScore();
     }
 
-    // Record the flight path actually taken
-    const recordedDist = Math.max(1, Math.floor(this.pathDistance));
+    // Record the flight path actually taken (only recording branches for levels reached)
+    const flownDist = Math.max(1, Math.floor(this.pathDistance - this.startDistance));
     const branchesObj: Record<number, 'LEFT' | 'RIGHT'> = {};
     flightPath.chosenBranches.forEach((val, key) => {
-      branchesObj[key] = val;
+      if (key <= this.startLevel || this.pathDistance >= key * LEVEL_LENGTH - 0.5) {
+        branchesObj[key] = val;
+      }
     });
     flightPathHistory.recordFlight({
       score: this.score,
-      distance: recordedDist,
-      maxLevel: Math.max(0, Math.floor(recordedDist / LEVEL_LENGTH)),
+      distance: flownDist,
+      maxLevel: Math.max(this.startLevel, Math.floor(this.pathDistance / LEVEL_LENGTH)),
       branches: branchesObj,
       flapsCount: this.flapsCount,
       durationSeconds: Math.floor(this.airTime),
@@ -784,16 +857,85 @@ export class GameEngine {
         this.notifyStats();
       }
     } else if (this.state === 'GAMEOVER') {
-      // Game Over: bird falls to terrain if not already there
+      // Game Over: bird falls to terrain or seabed floor if not already there, with column bounce if applicable
       const frame = flightPath.getFrame(this.pathDistance, this.activeBranch);
       const terrainH = flightPath.getTerrainHeight(this.bird.group.position.x, this.bird.group.position.z);
+      const groundY = terrainH + 0.4;
 
-      if (this.bird.group.position.y > terrainH + 0.4) {
-        this.bird.group.position.y -= 14.0 * delta;
-        this.bird.group.rotation.x += 2.0 * delta;
-        this.bird.group.rotation.z += 1.5 * delta;
-      } else {
-        this.bird.group.position.y = terrainH + 0.4;
+      // 1. Ground detection: clamp to seabed/terrain surface and mark grounded
+      if (this.bird.group.position.y <= groundY) {
+        this.bird.group.position.y = groundY;
+        this.isBirdGrounded = true;
+      }
+
+      // 2. Air/Water physics & bounce (sinks to the bottom of the water; spins stop upon touching seabed/terrain)
+      if (!this.isBirdGrounded) {
+        const isUnderwater = this.bird.group.position.y < WATER_LEVEL;
+        const fallRate = isUnderwater ? 6.5 : 14.0;
+
+        if (this.isPillarBounce && this.pillarBounceDistanceTraveled < this.pillarBounceDistanceTarget) {
+          // Bounce horizontally in Z direction (backward or forward away from the column poly volume)
+          const remainingDist = this.pillarBounceDistanceTarget - this.pillarBounceDistanceTraveled;
+          const stepDist = Math.min(remainingDist, Math.abs(this.pillarBounceVelocityZ) * delta);
+          const deltaZ = stepDist * this.pillarBounceDirection;
+          this.bird.group.position.z += deltaZ;
+          this.pillarBounceDistanceTraveled += stepDist;
+
+          // Smoothly decay bounce horizontal velocity
+          this.pillarBounceVelocityZ = THREE.MathUtils.lerp(this.pillarBounceVelocityZ, 0, 1.0 - Math.exp(-6.0 * delta));
+
+          // Lateral bounce deflection
+          if (Math.abs(this.pillarBounceVelocityX) > 0.01) {
+            this.bird.group.position.x += this.pillarBounceVelocityX * delta;
+            this.pillarBounceVelocityX = THREE.MathUtils.lerp(this.pillarBounceVelocityX, 0, 1.0 - Math.exp(-5.0 * delta));
+          }
+
+          // Bounce upward pop before gravity pulls bird down
+          if (this.pillarBounceVelocityY > 0) {
+            this.bird.group.position.y += this.pillarBounceVelocityY * delta;
+            this.pillarBounceVelocityY -= 18.0 * delta;
+          } else {
+            this.bird.group.position.y -= fallRate * delta;
+          }
+
+          // Tumble rotation in the air or water
+          const rotRate = isUnderwater ? 1.5 : 3.5;
+          this.bird.group.rotation.x -= rotRate * delta * this.pillarBounceDirection;
+          this.bird.group.rotation.z += (rotRate * 0.6) * delta;
+        } else {
+          // Standard fall and tumble (gentler hydrodynamic sinking if underwater)
+          this.bird.group.position.y -= fallRate * delta;
+          const rotRate = isUnderwater ? 0.9 : 2.0;
+          this.bird.group.rotation.x += rotRate * delta;
+          this.bird.group.rotation.z += (rotRate * 0.75) * delta;
+        }
+
+        // Re-check ground immediately after move
+        if (this.bird.group.position.y <= groundY) {
+          this.bird.group.position.y = groundY;
+          this.isBirdGrounded = true;
+        }
+      }
+
+      // 3. Absolute Column Clearance Constraint:
+      // Guarantees that the dead bird is never positioned inside the poly volume of the column or its voxel base
+      if (this.hitColumnCenter) {
+        const dx = this.bird.group.position.x - this.hitColumnCenter.x;
+        const dz = this.bird.group.position.z - this.hitColumnCenter.z;
+        const distSq = dx * dx + dz * dz;
+        const minClearance = 2.95; // Safe clearance radius outside 2x2 pillar and 4x4 base blocks
+
+        if (distSq < minClearance * minClearance) {
+          if (this.pillarBounceDirection < 0) {
+            this.bird.group.position.z = Math.min(this.bird.group.position.z, this.hitColumnCenter.z - minClearance);
+          } else if (this.pillarBounceDirection > 0) {
+            this.bird.group.position.z = Math.max(this.bird.group.position.z, this.hitColumnCenter.z + minClearance);
+          } else {
+            const dist = Math.sqrt(distSq) || 0.1;
+            this.bird.group.position.x = this.hitColumnCenter.x + (dx / dist) * minClearance;
+            this.bird.group.position.z = this.hitColumnCenter.z + (dz / dist) * minClearance;
+          }
+        }
       }
 
       this.bird.update(delta, 0, false);
@@ -900,9 +1042,18 @@ export class GameEngine {
       }
     }
 
-    // 2. Terrain Collision Check
+    // 2. Terrain & Water Surface Collision Check
     const terrainH = flightPath.getTerrainHeight(birdPos.x, birdPos.z);
-    if (birdPos.y <= terrainH + 0.55) {
+    const weights = flightPath.getBiomeWeights(birdPos.x, birdPos.z);
+    const isWater =
+      (weights.waterDeep || 0) > 0.001 ||
+      (weights.waterShallow || 0) > 0.001 ||
+      weights.primary === 'SHALLOW_WATERS' ||
+      weights.primary === 'DEEP_WATERS' ||
+      terrainH < WATER_LEVEL;
+    const surfaceH = isWater ? Math.max(terrainH, WATER_LEVEL) : terrainH;
+
+    if (birdPos.y <= surfaceH + 0.55) {
       // If immunity is active, cushion push upward safely!
       if (this.immunityTimeRemaining > 0) {
         soundManager.playShieldDeflect();
@@ -917,7 +1068,7 @@ export class GameEngine {
         distance: this.pathDistance,
         branch: this.activeBranch,
         lateralOffset: this.currentBranchOffset,
-        worldPos: { x: birdPos.x, y: terrainH, z: birdPos.z },
+        worldPos: { x: birdPos.x, y: surfaceH, z: birdPos.z },
       });
       return;
     }

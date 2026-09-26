@@ -1,6 +1,6 @@
 import React, { useEffect, useRef } from 'react';
 import { flightPath, LEVEL_LENGTH } from '../game/pathGenerator';
-import { biomeRegistry, Biome } from '../biomes';
+import { biomeRegistry, Biome, WATER_LEVEL } from '../biomes';
 
 interface TerrainMapCanvasProps {
   width: number;
@@ -54,6 +54,7 @@ export const TerrainMapCanvas: React.FC<TerrainMapCanvasProps> = ({
 
     const mountainBiome = biomeRegistry.getByChar('M');
     const mountainLowBiome = biomeRegistry.getByChar('m');
+    const cloudsBiome = biomeRegistry.getByChar('s');
 
     // Sample terrain elevation, biome weights, and vertex colors
     for (let gy = 0; gy < gridH; gy++) {
@@ -110,7 +111,8 @@ export const TerrainMapCanvas: React.FC<TerrainMapCanvasProps> = ({
         // Smooth Mountain snow peaks blending
         const mountainWeight =
           (mountainBiome ? weights.biomeWeights?.get(mountainBiome) || 0 : 0) +
-          (mountainLowBiome ? weights.biomeWeights?.get(mountainLowBiome) || 0 : 0);
+          (mountainLowBiome ? weights.biomeWeights?.get(mountainLowBiome) || 0 : 0) +
+          (cloudsBiome ? weights.biomeWeights?.get(cloudsBiome) || 0 : 0);
 
         if (mountainWeight > 0.01 && h > 18.0) {
           const snowFactor = mountainWeight * Math.min(1.0, (h - 18.0) / 8.0);
@@ -126,7 +128,14 @@ export const TerrainMapCanvas: React.FC<TerrainMapCanvasProps> = ({
         const dhx = (hEast - h) / 6.0;
         const dhz = (hNorth - h) / 12.0;
         const shade = 1.0 + (-dhx * 0.22 + dhz * 0.16);
-        const light = Math.max(0.72, Math.min(1.28, shade));
+        let light = Math.max(0.72, Math.min(1.28, shade));
+
+        // Submerged terrain sits under a flat water level; soften hillshading for glassy flat water
+        if (h < WATER_LEVEL) {
+          const depth = WATER_LEVEL - h;
+          const waterCalm = Math.min(1.0, depth / 2.5);
+          light = light + (1.0 - light) * (waterCalm * 0.75);
+        }
 
         totalR = Math.max(0, Math.min(1, totalR * light));
         totalG = Math.max(0, Math.min(1, totalG * light));

@@ -1,20 +1,27 @@
 import * as THREE from 'three';
-import { flightPath, FlightPathGenerator, ForkDecision, LEVEL_LENGTH } from './pathGenerator';
+import { BiomeWeights, flightPath, FlightPathGenerator, ForkDecision, LEVEL_LENGTH } from './pathGenerator';
 import { ObstacleData } from '../types';
 import { WindGustPair, WindGustTriggerResult } from './windGust';
 import { CanyonRiverManager } from './canyonRiver';
 import { CloudSystem } from './cloudSystem';
 import { FeatherManager } from './featherManager';
 import { TotemManager } from './totemManager';
-import { Biome, biomeRegistry } from '../biomes';
+import { Biome, biomeRegistry, WATER_LEVEL } from '../biomes';
 
 export type { ForkDecision };
 
 interface TerrainChunk {
   mesh: THREE.Mesh;
+  waterMesh: THREE.Mesh;
   geometry: THREE.PlaneGeometry;
   posAttr: THREE.BufferAttribute;
   colorAttr: THREE.BufferAttribute;
+  waterGeometry: THREE.BufferGeometry;
+  waterIndexAttr: THREE.BufferAttribute;
+  waterIndices: Uint16Array;
+  waterUvAttr: THREE.BufferAttribute;
+  waterBeachWeightAttr: THREE.BufferAttribute;
+  waterDepthAttr: THREE.BufferAttribute;
   centerX: number;
   centerZ: number;
   gridX: number;
@@ -152,10 +159,12 @@ function buildVoxelGeometry(
  * Procedural Voxel Block Pillar Generator with Voxel Neighbor Culling.
  * Creates a complete, seamless column + capital composed purely of standard 1x1x1 blocks
  * without internal coplanar polygons that cause Z-fighting shimmer.
+ * The bottom pillar / base extends 3 times lower (72 blocks = 72 meters)
+ * so columns stay grounded and never appear like they are floating.
  */
 function createVoxelBlockPillar(biome: Biome, isTop: boolean): THREE.BufferGeometry {
   const voxels: VoxelBlock[] = [];
-  const layers = 24; // 24 vertical blocks = 24 meters
+  const layers = isTop ? 24 : 72; // Base of column extends 3x lower (72m vs 24m)
 
   // Core 2x2 column of 1.0 x 1.0 x 1.0 blocks
   const coreCoords = [
@@ -166,7 +175,7 @@ function createVoxelBlockPillar(biome: Biome, isTop: boolean): THREE.BufferGeome
   ];
 
   for (let i = 0; i < layers; i++) {
-    // Bottom pillar: y goes from -0.5 down to -23.5 (facing up towards gap at -0.5)
+    // Bottom pillar: y goes from -0.5 down to -71.5 (facing up towards gap at -0.5)
     // Top pillar: y goes from +0.5 up to +23.5 (facing down towards gap at +0.5)
     const y = isTop ? (0.5 + i) : (-0.5 - i);
 
@@ -200,6 +209,7 @@ function createVoxelBlockPillar(biome: Biome, isTop: boolean): THREE.BufferGeome
 /**
  * Procedural Voxel Block Foundation Generator with Neighbor & Column Core Culling.
  * Prevents overlapping coplanar faces against the column pillar at X = ±1, Z = ±1.
+ * Sub-ground anchoring blocks extend 3 times deeper to embed firmly into uneven/sloped terrain.
  */
 function createVoxelBlockBase(biome: Biome): THREE.BufferGeometry {
   const voxels: VoxelBlock[] = [];
@@ -221,8 +231,10 @@ function createVoxelBlockBase(biome: Biome): THREE.BufferGeometry {
   for (const [bx, bz] of baseCoords) {
     // Upper ground level block
     voxels.push({ x: bx, y: 0.5, z: bz, topC, sideC, botC });
-    // Sub-ground anchoring block
-    voxels.push({ x: bx, y: -0.5, z: bz, topC, sideC, botC });
+    // Sub-ground anchoring blocks extending 3x deeper into terrain (-0.5, -1.5, -2.5)
+    for (let depth = 0; depth < 3; depth++) {
+      voxels.push({ x: bx, y: -0.5 - depth, z: bz, topC, sideC, botC });
+    }
   }
 
   // Treat the interior 2x2 pillar column core as solid occupied space so base blocks do not emit
@@ -234,10 +246,68 @@ function createVoxelBlockBase(biome: Biome): THREE.BufferGeometry {
   ];
   for (const [cx, cz] of coreCoords) {
     solidCoreMask.add(voxelKey(cx, 0.5, cz));
-    solidCoreMask.add(voxelKey(cx, -0.5, cz));
+    for (let depth = 0; depth < 3; depth++) {
+      solidCoreMask.add(voxelKey(cx, -0.5 - depth, cz));
+    }
   }
 
   return buildVoxelGeometry(voxels, solidCoreMask);
+}
+
+/**
+ * Shared geometries and materials for the 4 biome tree variants:
+ * - "h" and "H": classic oak/deciduous hills trees
+ * - "w": tropical sparse palm trees
+ * - "m": conical evergreen pine trees
+ * - "M": snow-covered alpine pine trees
+ */
+interface TreeSharedAssets {
+  // Hills ("h", "H")
+  hillsTrunkGeo: THREE.BoxGeometry;
+  hillsFoliageBaseGeo: THREE.BoxGeometry;
+  hillsFoliageTopGeo: THREE.BoxGeometry;
+  hillsTrunkMat: THREE.MeshStandardMaterial;
+  hillsFoliageMat: THREE.MeshStandardMaterial;
+
+  // Palm ("w")
+  palmTrunkBaseGeo: THREE.BoxGeometry;
+  palmTrunkMidGeo: THREE.BoxGeometry;
+  palmTrunkTopGeo: THREE.BoxGeometry;
+  palmCoconutGeo: THREE.BoxGeometry;
+  palmCrownGeo: THREE.BoxGeometry;
+  palmFrondInXGeo: THREE.BoxGeometry;
+  palmFrondOutXGeo: THREE.BoxGeometry;
+  palmFrondInZGeo: THREE.BoxGeometry;
+  palmFrondOutZGeo: THREE.BoxGeometry;
+  palmFrondDiagGeo: THREE.BoxGeometry;
+  palmTrunkMat: THREE.MeshStandardMaterial;
+  palmCoconutMat: THREE.MeshStandardMaterial;
+  palmCrownMat: THREE.MeshStandardMaterial;
+  palmFrondInMat: THREE.MeshStandardMaterial;
+  palmFrondOutMat: THREE.MeshStandardMaterial;
+
+  // Pine ("m")
+  pineTrunkGeo: THREE.BoxGeometry;
+  pineTier1Geo: THREE.BoxGeometry;
+  pineTier2Geo: THREE.BoxGeometry;
+  pineTier3Geo: THREE.BoxGeometry;
+  pineSpireGeo: THREE.BoxGeometry;
+  pineTrunkMat: THREE.MeshStandardMaterial;
+  pineFoliageMat: THREE.MeshStandardMaterial;
+
+  // Snow Pine ("M")
+  snowPineTrunkGeo: THREE.BoxGeometry;
+  snowTier1BaseGeo: THREE.BoxGeometry;
+  snowTier1CapGeo: THREE.BoxGeometry;
+  snowTier2BaseGeo: THREE.BoxGeometry;
+  snowTier2CapGeo: THREE.BoxGeometry;
+  snowTier3BaseGeo: THREE.BoxGeometry;
+  snowTier3CapGeo: THREE.BoxGeometry;
+  snowSpireGeo: THREE.BoxGeometry;
+  snowPineTrunkMat: THREE.MeshStandardMaterial;
+  snowPineFoliageMat: THREE.MeshStandardMaterial;
+  snowCapMat: THREE.MeshStandardMaterial;
+  snowSpireMat: THREE.MeshStandardMaterial;
 }
 
 export class EnvironmentManager {
@@ -249,6 +319,9 @@ export class EnvironmentManager {
   private currentColumnIndex: number = 0;
   private obstacleMeshesGroup: THREE.Group;
   private terrainGroup: THREE.Group;
+  private waterGroup: THREE.Group;
+  private waterTexture: THREE.CanvasTexture;
+  private waterMaterial: THREE.MeshStandardMaterial;
   private canyonRiver: CanyonRiverManager;
   private chunks: TerrainChunk[] = [];
   private chunkGrid: TerrainChunk[][] = [];
@@ -259,7 +332,9 @@ export class EnvironmentManager {
   private readonly chunkWidthSegments: number = 30;
   private readonly chunkLengthSegments: number = 30;
   private lastBirdX: number = 0;
+  private waterTime: number = 0;
   private treesGroup: THREE.Group;
+  private treeAssets: TreeSharedAssets;
   private cloudSystem: CloudSystem;
   public featherManager: FeatherManager;
   private totemManager: TotemManager | null = null;
@@ -326,6 +401,8 @@ export class EnvironmentManager {
     this.treesGroup = new THREE.Group();
     scene.add(this.treesGroup);
 
+    this.treeAssets = this.createTreeSharedAssets();
+
     this.cloudSystem = new CloudSystem();
     scene.add(this.cloudSystem.group);
 
@@ -377,6 +454,106 @@ export class EnvironmentManager {
     this.terrainGroup = new THREE.Group();
     scene.add(this.terrainGroup);
 
+    // Flat bluish water sheet surface filling water basins at sea level
+    this.waterGroup = new THREE.Group();
+    scene.add(this.waterGroup);
+
+    this.waterTexture = this.createWaterTexture();
+    this.waterMaterial = new THREE.MeshStandardMaterial({
+      map: this.waterTexture,
+      color: 0x38bdf8,
+      roughness: 0.1,
+      metalness: 0.18,
+      transparent: true,
+      opacity: 0.82,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      polygonOffset: true,
+      polygonOffsetFactor: -1,
+      polygonOffsetUnits: -1,
+    });
+
+    // Beach Wave Shader Hook: zero extra draw calls, GPU-driven shoreline wave swells & frothy foam
+    this.waterMaterial.customProgramCacheKey = () => 'beach_waves_water_v1';
+    this.waterMaterial.onBeforeCompile = (shader) => {
+      shader.uniforms.uTime = { value: 0 };
+      this.waterMaterial.userData.shader = shader;
+
+      shader.vertexShader = shader.vertexShader.replace(
+        '#include <common>',
+        `#include <common>
+attribute float aBeachWave;
+attribute float aWaterDepth;
+varying vec3 vBeachWorldPos;
+varying float vBeachWave;
+varying float vWaterDepth;
+uniform float uTime;`
+      );
+
+      shader.vertexShader = shader.vertexShader.replace(
+        '#include <begin_vertex>',
+        `#include <begin_vertex>
+vBeachWave = aBeachWave;
+vWaterDepth = aWaterDepth;
+vec4 bWorldPos = modelMatrix * vec4(transformed, 1.0);
+vBeachWorldPos = bWorldPos.xyz;
+
+if (aBeachWave > 0.0) {
+  // Gentle rhythmic swell rolling toward the beach (2.5s period)
+  float wavePhase = uTime * 2.5 + bWorldPos.x * 0.35 + bWorldPos.z * 0.25;
+  float waveSwell = sin(wavePhase);
+  // Swell upward and forward onto the sand by up to 0.12m
+  transformed.y += max(0.0, waveSwell) * 0.12 * aBeachWave;
+}`
+      );
+
+      shader.fragmentShader = shader.fragmentShader.replace(
+        '#include <common>',
+        `#include <common>
+varying vec3 vBeachWorldPos;
+varying float vBeachWave;
+varying float vWaterDepth;
+uniform float uTime;`
+      );
+
+      shader.fragmentShader = shader.fragmentShader.replace(
+        '#include <map_fragment>',
+        `#include <map_fragment>
+if (vBeachWave > 0.02) {
+  float wavePhase = uTime * 2.5 + vBeachWorldPos.x * 0.35 + vBeachWorldPos.z * 0.25;
+  float waveCycle = sin(wavePhase);
+
+  // 1. Radiant tropical turquoise shallows near the coast
+  vec3 shallowsColor = vec3(0.14, 0.82, 0.90);
+  float shallowFactor = smoothstep(1.2, 0.05, vWaterDepth) * vBeachWave;
+  diffuseColor.rgb = mix(diffuseColor.rgb, shallowsColor, shallowFactor * 0.42);
+
+  // 2. Breaking wave crest surging toward the shore
+  float crest = smoothstep(0.35, 0.96, waveCycle);
+
+  // 3. Frothy shoreline foam where the water meets the beach sand
+  float shoreLine = smoothstep(0.40, 0.02, abs(vWaterDepth - 0.02 - max(0.0, waveCycle) * 0.07));
+
+  // 4. Cellular bubbling sea-foam texture detail
+  vec2 foamUV = vBeachWorldPos.xz * 3.8;
+  float bubbleNoise = fract(sin(dot(floor(foamUV), vec2(12.9898, 78.233))) * 43758.5453);
+  float bubbleDetail = smoothstep(0.2, 0.8, bubbleNoise);
+
+  // 5. Total foam intensity
+  float foamFactor = clamp(
+    (crest * 0.65 + shoreLine * 0.85 + (crest * shoreLine) * 0.5) * (0.8 + 0.3 * bubbleDetail) * vBeachWave,
+    0.0,
+    1.0
+  );
+
+  // 6. Blend bright white frothy surf into water diffuse
+  vec3 foamColor = vec3(0.96, 0.99, 1.0);
+  diffuseColor.rgb = mix(diffuseColor.rgb, foamColor, foamFactor * 0.94);
+  diffuseColor.a = max(diffuseColor.a, foamFactor * 0.96);
+}`
+      );
+    };
+
     // Canyon River with Whitewater Rapids Manager
     this.canyonRiver = new CanyonRiverManager(scene);
 
@@ -386,6 +563,10 @@ export class EnvironmentManager {
       flatShading: true,
       vertexColors: true,
     });
+
+    const cols = this.chunkWidthSegments + 1;
+    const rows = this.chunkLengthSegments + 1;
+    const maxWaterIndices = (cols - 1) * (rows - 1) * 6; // 30 * 30 * 6 = 5400
 
     for (let ix = 0; ix < this.numChunksX; ix++) {
       this.chunkGrid[ix] = [];
@@ -406,11 +587,65 @@ export class EnvironmentManager {
         mesh.receiveShadow = true;
         this.terrainGroup.add(mesh);
 
+        // Per-chunk dynamic water geometry matching the terrain grid resolution
+        const waterGeo = new THREE.BufferGeometry();
+        const waterPositions = new Float32Array(vertexCount * 3);
+        const waterUvs = new Float32Array(vertexCount * 2);
+        const waterNormals = new Float32Array(vertexCount * 3);
+        const waterBeachWeights = new Float32Array(vertexCount);
+        const waterDepths = new Float32Array(vertexCount);
+
+        for (let r = 0; r < rows; r++) {
+          for (let c = 0; c < cols; c++) {
+            const vIdx = r * cols + c;
+            const lx = ((c / (cols - 1)) - 0.5) * this.chunkWidth;
+            const lz = ((r / (rows - 1)) - 0.5) * this.chunkLength;
+
+            waterPositions[vIdx * 3] = lx;
+            waterPositions[vIdx * 3 + 1] = WATER_LEVEL;
+            waterPositions[vIdx * 3 + 2] = lz;
+
+            waterNormals[vIdx * 3] = 0;
+            waterNormals[vIdx * 3 + 1] = 1;
+            waterNormals[vIdx * 3 + 2] = 0;
+
+            waterUvs[vIdx * 2] = (c / (cols - 1)) * 4;
+            waterUvs[vIdx * 2 + 1] = (r / (rows - 1)) * 4;
+          }
+        }
+
+        const waterIndices = new Uint16Array(maxWaterIndices);
+        const waterIndexAttr = new THREE.BufferAttribute(waterIndices, 1);
+        const waterPosAttr = new THREE.BufferAttribute(waterPositions, 3);
+        const waterUvAttr = new THREE.BufferAttribute(waterUvs, 2);
+        const waterNormalAttr = new THREE.BufferAttribute(waterNormals, 3);
+        const waterBeachWeightAttr = new THREE.BufferAttribute(waterBeachWeights, 1);
+        const waterDepthAttr = new THREE.BufferAttribute(waterDepths, 1);
+
+        waterGeo.setAttribute('position', waterPosAttr);
+        waterGeo.setAttribute('uv', waterUvAttr);
+        waterGeo.setAttribute('normal', waterNormalAttr);
+        waterGeo.setAttribute('aBeachWave', waterBeachWeightAttr);
+        waterGeo.setAttribute('aWaterDepth', waterDepthAttr);
+        waterGeo.setIndex(waterIndexAttr);
+        waterGeo.setDrawRange(0, 0);
+
+        const waterMesh = new THREE.Mesh(waterGeo, this.waterMaterial);
+        waterMesh.receiveShadow = true;
+        this.waterGroup.add(waterMesh);
+
         const chunk: TerrainChunk = {
           mesh,
+          waterMesh,
           geometry: geo,
           posAttr: geo.attributes.position as THREE.BufferAttribute,
           colorAttr: geo.attributes.color as THREE.BufferAttribute,
+          waterGeometry: waterGeo,
+          waterIndexAttr,
+          waterIndices,
+          waterUvAttr,
+          waterBeachWeightAttr,
+          waterDepthAttr,
           centerX: 0,
           centerZ: 0,
           gridX: 0,
@@ -432,51 +667,517 @@ export class EnvironmentManager {
     this.featherManager.updateTerrainFeathers(0);
   }
 
+  /**
+   * Procedural aquatic water surface texture with caustic networks, gentle wave crests,
+   * and sunlit specular micro-glints.
+   */
+  private createWaterTexture(): THREE.CanvasTexture {
+    const canvas = document.createElement('canvas');
+    canvas.width = 512;
+    canvas.height = 512;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      return new THREE.CanvasTexture(canvas);
+    }
+
+    // 1. Deep ocean to tropical azure water gradient background
+    const bgGrad = ctx.createLinearGradient(0, 0, 512, 512);
+    bgGrad.addColorStop(0.0, '#0284c7'); // Rich azure blue
+    bgGrad.addColorStop(0.35, '#0ea5e9'); // Tropical cerulean
+    bgGrad.addColorStop(0.7, '#0284c7'); // Ocean blue
+    bgGrad.addColorStop(1.0, '#0369a1'); // Deep sea blue
+    ctx.fillStyle = bgGrad;
+    ctx.fillRect(0, 0, 512, 512);
+
+    // 2. Translucent interconnected caustic rings
+    const drawCausticRing = (cx: number, cy: number, r: number, alpha: number) => {
+      ctx.strokeStyle = `rgba(224, 242, 254, ${alpha})`;
+      ctx.lineWidth = 2.8;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      const points = 8;
+      for (let p = 0; p <= points; p++) {
+        const angle = (p / points) * Math.PI * 2;
+        const dist = r * (0.82 + 0.36 * Math.sin(angle * 3 + cx * 0.04));
+        const px = cx + Math.cos(angle) * dist;
+        const py = cy + Math.sin(angle) * dist;
+        if (p === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+      ctx.stroke();
+    };
+
+    const gridSize = 56;
+    for (let gx = 0; gx <= 512; gx += gridSize) {
+      for (let gy = 0; gy <= 512; gy += gridSize) {
+        const jx = ((Math.sin(gx * 11.3 + gy * 7.7) * 0.5 + 0.5) - 0.5) * 24;
+        const jy = ((Math.cos(gx * 8.3 + gy * 13.9) * 0.5 + 0.5) - 0.5) * 24;
+        const radius = 22 + Math.sin(gx * 0.04 + gy * 0.03) * 6;
+        drawCausticRing(gx + jx, gy + jy, radius, 0.42);
+      }
+    }
+
+    // 3. Flowing undulating surface wave ribbons
+    for (let i = 0; i < 22; i++) {
+      const y = (i / 22) * 512;
+      ctx.beginPath();
+      ctx.strokeStyle = i % 2 === 0 ? 'rgba(255, 255, 255, 0.38)' : 'rgba(186, 230, 253, 0.32)';
+      ctx.lineWidth = 2.0;
+      for (let x = 0; x <= 512; x += 16) {
+        const waveY = y + Math.sin(x * 0.06 + i * 1.4) * 5.5 + Math.cos(x * 0.02) * 2.5;
+        if (x === 0) ctx.moveTo(x, waveY);
+        else ctx.lineTo(x, waveY);
+      }
+      ctx.stroke();
+    }
+
+    // 4. Subtle sunlight sparkles (specular sun glints on the waves)
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+    for (let s = 0; s < 50; s++) {
+      const sx = Math.abs(Math.sin(s * 17.13 + 3.7)) * 512;
+      const sy = Math.abs(Math.cos(s * 29.41 + 1.2)) * 512;
+      const size = 1.4 + Math.sin(s) * 0.7;
+      ctx.beginPath();
+      ctx.arc(sx, sy, size, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.wrapS = THREE.RepeatWrapping;
+    texture.wrapT = THREE.RepeatWrapping;
+    texture.repeat.set(4, 4);
+    return texture;
+  }
+
+  private createTreeSharedAssets(): TreeSharedAssets {
+    // 1. Hills ("h", "H"): classic oak / deciduous hills trees
+    const hillsTrunkGeo = new THREE.BoxGeometry(0.65, 2.2, 0.65);
+    const hillsFoliageBaseGeo = new THREE.BoxGeometry(2.4, 1.6, 2.4);
+    const hillsFoliageTopGeo = new THREE.BoxGeometry(1.4, 1.0, 1.4);
+    const hillsTrunkMat = new THREE.MeshStandardMaterial({ color: 0x6d4c2b, roughness: 0.9, flatShading: true });
+    const hillsFoliageMat = new THREE.MeshStandardMaterial({ color: 0x3d7326, roughness: 0.85, flatShading: true });
+
+    // 2. Palm ("w"): tropical sparse palm trees with curved trunk, coconuts & drooping fronds
+    const palmTrunkBaseGeo = new THREE.BoxGeometry(0.45, 1.4, 0.45);
+    const palmTrunkMidGeo = new THREE.BoxGeometry(0.42, 1.4, 0.42);
+    const palmTrunkTopGeo = new THREE.BoxGeometry(0.38, 1.3, 0.38);
+    const palmCoconutGeo = new THREE.BoxGeometry(0.32, 0.32, 0.32);
+    const palmCrownGeo = new THREE.BoxGeometry(0.7, 0.4, 0.7);
+    const palmFrondInXGeo = new THREE.BoxGeometry(1.4, 0.22, 0.65);
+    const palmFrondOutXGeo = new THREE.BoxGeometry(1.0, 0.18, 0.5);
+    const palmFrondInZGeo = new THREE.BoxGeometry(0.65, 0.22, 1.4);
+    const palmFrondOutZGeo = new THREE.BoxGeometry(0.5, 0.18, 1.0);
+    const palmFrondDiagGeo = new THREE.BoxGeometry(0.55, 0.18, 0.55);
+    const palmTrunkMat = new THREE.MeshStandardMaterial({ color: 0x8c6239, roughness: 0.9, flatShading: true });
+    const palmCoconutMat = new THREE.MeshStandardMaterial({ color: 0x3b200b, roughness: 0.9, flatShading: true });
+    const palmCrownMat = new THREE.MeshStandardMaterial({ color: 0x2e8b57, roughness: 0.85, flatShading: true });
+    const palmFrondInMat = new THREE.MeshStandardMaterial({ color: 0x38a169, roughness: 0.85, flatShading: true });
+    const palmFrondOutMat = new THREE.MeshStandardMaterial({ color: 0x277a45, roughness: 0.85, flatShading: true });
+
+    // 3. Pine ("m"): conical evergreen pine trees with tiered canopy
+    const pineTrunkGeo = new THREE.BoxGeometry(0.55, 2.2, 0.55);
+    const pineTier1Geo = new THREE.BoxGeometry(2.8, 1.1, 2.8);
+    const pineTier2Geo = new THREE.BoxGeometry(2.0, 1.0, 2.0);
+    const pineTier3Geo = new THREE.BoxGeometry(1.3, 0.9, 1.3);
+    const pineSpireGeo = new THREE.BoxGeometry(0.65, 0.9, 0.65);
+    const pineTrunkMat = new THREE.MeshStandardMaterial({ color: 0x48321d, roughness: 0.9, flatShading: true });
+    const pineFoliageMat = new THREE.MeshStandardMaterial({ color: 0x1e4f2b, roughness: 0.85, flatShading: true });
+
+    // 4. Snow Pine ("M"): snow-covered alpine pine trees with crisp snow caps
+    const snowPineTrunkGeo = new THREE.BoxGeometry(0.55, 2.2, 0.55);
+    const snowTier1BaseGeo = new THREE.BoxGeometry(2.8, 0.75, 2.8);
+    const snowTier1CapGeo = new THREE.BoxGeometry(2.85, 0.35, 2.85);
+    const snowTier2BaseGeo = new THREE.BoxGeometry(2.0, 0.65, 2.0);
+    const snowTier2CapGeo = new THREE.BoxGeometry(2.05, 0.35, 2.05);
+    const snowTier3BaseGeo = new THREE.BoxGeometry(1.3, 0.55, 1.3);
+    const snowTier3CapGeo = new THREE.BoxGeometry(1.35, 0.35, 1.35);
+    const snowSpireGeo = new THREE.BoxGeometry(0.7, 0.8, 0.7);
+    const snowPineTrunkMat = new THREE.MeshStandardMaterial({ color: 0x383028, roughness: 0.9, flatShading: true });
+    const snowPineFoliageMat = new THREE.MeshStandardMaterial({ color: 0x184424, roughness: 0.85, flatShading: true });
+    const snowCapMat = new THREE.MeshStandardMaterial({ color: 0xf1f5f9, roughness: 0.75, flatShading: true });
+    const snowSpireMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.75, flatShading: true });
+
+    return {
+      hillsTrunkGeo,
+      hillsFoliageBaseGeo,
+      hillsFoliageTopGeo,
+      hillsTrunkMat,
+      hillsFoliageMat,
+      palmTrunkBaseGeo,
+      palmTrunkMidGeo,
+      palmTrunkTopGeo,
+      palmCoconutGeo,
+      palmCrownGeo,
+      palmFrondInXGeo,
+      palmFrondOutXGeo,
+      palmFrondInZGeo,
+      palmFrondOutZGeo,
+      palmFrondDiagGeo,
+      palmTrunkMat,
+      palmCoconutMat,
+      palmCrownMat,
+      palmFrondInMat,
+      palmFrondOutMat,
+      pineTrunkGeo,
+      pineTier1Geo,
+      pineTier2Geo,
+      pineTier3Geo,
+      pineSpireGeo,
+      pineTrunkMat,
+      pineFoliageMat,
+      snowPineTrunkGeo,
+      snowTier1BaseGeo,
+      snowTier1CapGeo,
+      snowTier2BaseGeo,
+      snowTier2CapGeo,
+      snowTier3BaseGeo,
+      snowTier3CapGeo,
+      snowSpireGeo,
+      snowPineTrunkMat,
+      snowPineFoliageMat,
+      snowCapMat,
+      snowSpireMat,
+    };
+  }
+
+  private createTreeObject(): THREE.Group {
+    const tree = new THREE.Group();
+    const assets = this.treeAssets;
+
+    // 1. Hills Tree Group ("h" and "H")
+    const hillsGroup = new THREE.Group();
+    const hTrunk = new THREE.Mesh(assets.hillsTrunkGeo, assets.hillsTrunkMat);
+    hTrunk.position.y = 1.1;
+    hTrunk.castShadow = true;
+    hTrunk.receiveShadow = true;
+    hillsGroup.add(hTrunk);
+    const hBase = new THREE.Mesh(assets.hillsFoliageBaseGeo, assets.hillsFoliageMat);
+    hBase.position.y = 2.4;
+    hBase.castShadow = true;
+    hBase.receiveShadow = true;
+    hillsGroup.add(hBase);
+    const hTop = new THREE.Mesh(assets.hillsFoliageTopGeo, assets.hillsFoliageMat);
+    hTop.position.y = 3.4;
+    hTop.castShadow = true;
+    hTop.receiveShadow = true;
+    hillsGroup.add(hTop);
+    tree.add(hillsGroup);
+
+    // 2. Palm Tree Group ("w")
+    const palmGroup = new THREE.Group();
+    const pTrunk1 = new THREE.Mesh(assets.palmTrunkBaseGeo, assets.palmTrunkMat);
+    pTrunk1.position.set(0, 0.7, 0);
+    pTrunk1.castShadow = true;
+    palmGroup.add(pTrunk1);
+    const pTrunk2 = new THREE.Mesh(assets.palmTrunkMidGeo, assets.palmTrunkMat);
+    pTrunk2.position.set(0.22, 1.85, 0.08);
+    pTrunk2.castShadow = true;
+    palmGroup.add(pTrunk2);
+    const pTrunk3 = new THREE.Mesh(assets.palmTrunkTopGeo, assets.palmTrunkMat);
+    pTrunk3.position.set(0.44, 2.95, 0.16);
+    pTrunk3.castShadow = true;
+    palmGroup.add(pTrunk3);
+    const pC1 = new THREE.Mesh(assets.palmCoconutGeo, assets.palmCoconutMat);
+    pC1.position.set(0.35, 3.35, 0.3);
+    palmGroup.add(pC1);
+    const pC2 = new THREE.Mesh(assets.palmCoconutGeo, assets.palmCoconutMat);
+    pC2.position.set(0.55, 3.35, 0.02);
+    palmGroup.add(pC2);
+    const pCrown = new THREE.Mesh(assets.palmCrownGeo, assets.palmCrownMat);
+    pCrown.position.set(0.44, 3.65, 0.16);
+    pCrown.castShadow = true;
+    palmGroup.add(pCrown);
+
+    const fInX1 = new THREE.Mesh(assets.palmFrondInXGeo, assets.palmFrondInMat);
+    fInX1.position.set(1.25, 3.75, 0.16);
+    fInX1.castShadow = true;
+    palmGroup.add(fInX1);
+    const fOutX1 = new THREE.Mesh(assets.palmFrondOutXGeo, assets.palmFrondOutMat);
+    fOutX1.position.set(2.25, 3.4, 0.16);
+    fOutX1.castShadow = true;
+    palmGroup.add(fOutX1);
+
+    const fInX2 = new THREE.Mesh(assets.palmFrondInXGeo, assets.palmFrondInMat);
+    fInX2.position.set(-0.37, 3.75, 0.16);
+    fInX2.castShadow = true;
+    palmGroup.add(fInX2);
+    const fOutX2 = new THREE.Mesh(assets.palmFrondOutXGeo, assets.palmFrondOutMat);
+    fOutX2.position.set(-1.37, 3.4, 0.16);
+    fOutX2.castShadow = true;
+    palmGroup.add(fOutX2);
+
+    const fInZ1 = new THREE.Mesh(assets.palmFrondInZGeo, assets.palmFrondInMat);
+    fInZ1.position.set(0.44, 3.75, 0.97);
+    fInZ1.castShadow = true;
+    palmGroup.add(fInZ1);
+    const fOutZ1 = new THREE.Mesh(assets.palmFrondOutZGeo, assets.palmFrondOutMat);
+    fOutZ1.position.set(0.44, 3.4, 1.97);
+    fOutZ1.castShadow = true;
+    palmGroup.add(fOutZ1);
+
+    const fInZ2 = new THREE.Mesh(assets.palmFrondInZGeo, assets.palmFrondInMat);
+    fInZ2.position.set(0.44, 3.75, -0.65);
+    fInZ2.castShadow = true;
+    palmGroup.add(fInZ2);
+    const fOutZ2 = new THREE.Mesh(assets.palmFrondOutZGeo, assets.palmFrondOutMat);
+    fOutZ2.position.set(0.44, 3.4, -1.65);
+    fOutZ2.castShadow = true;
+    palmGroup.add(fOutZ2);
+
+    const d1 = new THREE.Mesh(assets.palmFrondDiagGeo, assets.palmCrownMat);
+    d1.position.set(1.0, 3.55, 0.72);
+    palmGroup.add(d1);
+    const d2 = new THREE.Mesh(assets.palmFrondDiagGeo, assets.palmCrownMat);
+    d2.position.set(-0.12, 3.55, 0.72);
+    palmGroup.add(d2);
+    const d3 = new THREE.Mesh(assets.palmFrondDiagGeo, assets.palmCrownMat);
+    d3.position.set(1.0, 3.55, -0.4);
+    palmGroup.add(d3);
+    const d4 = new THREE.Mesh(assets.palmFrondDiagGeo, assets.palmCrownMat);
+    d4.position.set(-0.12, 3.55, -0.4);
+    palmGroup.add(d4);
+    tree.add(palmGroup);
+
+    // 3. Pine Tree Group ("m")
+    const pineGroup = new THREE.Group();
+    const pTrunk = new THREE.Mesh(assets.pineTrunkGeo, assets.pineTrunkMat);
+    pTrunk.position.y = 1.1;
+    pTrunk.castShadow = true;
+    pTrunk.receiveShadow = true;
+    pineGroup.add(pTrunk);
+    const pTier1 = new THREE.Mesh(assets.pineTier1Geo, assets.pineFoliageMat);
+    pTier1.position.y = 1.95;
+    pTier1.castShadow = true;
+    pTier1.receiveShadow = true;
+    pineGroup.add(pTier1);
+    const pTier2 = new THREE.Mesh(assets.pineTier2Geo, assets.pineFoliageMat);
+    pTier2.position.y = 2.8;
+    pTier2.castShadow = true;
+    pTier2.receiveShadow = true;
+    pineGroup.add(pTier2);
+    const pTier3 = new THREE.Mesh(assets.pineTier3Geo, assets.pineFoliageMat);
+    pTier3.position.y = 3.55;
+    pTier3.castShadow = true;
+    pTier3.receiveShadow = true;
+    pineGroup.add(pTier3);
+    const pSpire = new THREE.Mesh(assets.pineSpireGeo, assets.pineFoliageMat);
+    pSpire.position.y = 4.25;
+    pSpire.castShadow = true;
+    pSpire.receiveShadow = true;
+    pineGroup.add(pSpire);
+    tree.add(pineGroup);
+
+    // 4. Snow Covered Pine Tree Group ("M")
+    const snowPineGroup = new THREE.Group();
+    const spTrunk = new THREE.Mesh(assets.snowPineTrunkGeo, assets.snowPineTrunkMat);
+    spTrunk.position.y = 1.1;
+    spTrunk.castShadow = true;
+    spTrunk.receiveShadow = true;
+    snowPineGroup.add(spTrunk);
+    const spT1Base = new THREE.Mesh(assets.snowTier1BaseGeo, assets.snowPineFoliageMat);
+    spT1Base.position.y = 1.78;
+    spT1Base.castShadow = true;
+    spT1Base.receiveShadow = true;
+    snowPineGroup.add(spT1Base);
+    const spT1Cap = new THREE.Mesh(assets.snowTier1CapGeo, assets.snowCapMat);
+    spT1Cap.position.y = 2.2;
+    spT1Cap.castShadow = true;
+    spT1Cap.receiveShadow = true;
+    snowPineGroup.add(spT1Cap);
+
+    const spT2Base = new THREE.Mesh(assets.snowTier2BaseGeo, assets.snowPineFoliageMat);
+    spT2Base.position.y = 2.62;
+    spT2Base.castShadow = true;
+    spT2Base.receiveShadow = true;
+    snowPineGroup.add(spT2Base);
+    const spT2Cap = new THREE.Mesh(assets.snowTier2CapGeo, assets.snowCapMat);
+    spT2Cap.position.y = 3.02;
+    spT2Cap.castShadow = true;
+    spT2Cap.receiveShadow = true;
+    snowPineGroup.add(spT2Cap);
+
+    const spT3Base = new THREE.Mesh(assets.snowTier3BaseGeo, assets.snowPineFoliageMat);
+    spT3Base.position.y = 3.42;
+    spT3Base.castShadow = true;
+    spT3Base.receiveShadow = true;
+    snowPineGroup.add(spT3Base);
+    const spT3Cap = new THREE.Mesh(assets.snowTier3CapGeo, assets.snowCapMat);
+    spT3Cap.position.y = 3.77;
+    spT3Cap.castShadow = true;
+    spT3Cap.receiveShadow = true;
+    snowPineGroup.add(spT3Cap);
+
+    const spSpire = new THREE.Mesh(assets.snowSpireGeo, assets.snowSpireMat);
+    spSpire.position.y = 4.25;
+    spSpire.castShadow = true;
+    spSpire.receiveShadow = true;
+    snowPineGroup.add(spSpire);
+    tree.add(snowPineGroup);
+
+    tree.userData.hillsGroup = hillsGroup;
+    tree.userData.palmGroup = palmGroup;
+    tree.userData.pineGroup = pineGroup;
+    tree.userData.snowPineGroup = snowPineGroup;
+
+    return tree;
+  }
+
+  private setTreeVariant(
+    tree: THREE.Group,
+    variant: 'HILLS' | 'PALM' | 'PINE' | 'SNOW_PINE'
+  ) {
+    tree.userData.variant = variant;
+    const hillsGroup = tree.userData.hillsGroup as THREE.Group | undefined;
+    const palmGroup = tree.userData.palmGroup as THREE.Group | undefined;
+    const pineGroup = tree.userData.pineGroup as THREE.Group | undefined;
+    const snowPineGroup = tree.userData.snowPineGroup as THREE.Group | undefined;
+
+    if (hillsGroup) hillsGroup.visible = variant === 'HILLS';
+    if (palmGroup) palmGroup.visible = variant === 'PALM';
+    if (pineGroup) pineGroup.visible = variant === 'PINE';
+    if (snowPineGroup) snowPineGroup.visible = variant === 'SNOW_PINE';
+  }
+
+  private determineTreeVariant(
+    weights: BiomeWeights,
+    _x: number,
+    _z: number
+  ): 'NONE' | 'PALM' | 'PINE' | 'SNOW_PINE' | 'HILLS' {
+    const char = weights.primaryBiome?.char;
+
+    // "s" sky / clouds: no trees
+    if (char === 's' || (weights.clouds || 0) > 0.001 || weights.primary === 'HIGH_CLOUDS') {
+      return 'NONE';
+    }
+
+    // "W" deep water: no trees
+    if (char === 'W' || (weights.waterDeep || 0) > 0.001 || weights.primary === 'DEEP_WATERS') {
+      return 'NONE';
+    }
+
+    // "w" shallow water: sparse palm trees
+    if (char === 'w' || (weights.waterShallow || 0) > 0.2 || weights.primary === 'SHALLOW_WATERS') {
+      return 'PALM';
+    }
+
+    // "m" rugged mountain (low): pine trees
+    if (char === 'm' || ((weights.mountainLow || 0) > 0.3 && (weights.mountainLow || 0) >= (weights.mountain || 0))) {
+      return 'PINE';
+    }
+
+    // "M" rugged mountain (high): snow covered pine trees
+    if (char === 'M' || (weights.mountain || 0) > 0.3) {
+      return 'SNOW_PINE';
+    }
+
+    // "h" and "H" hills: same trees that they have now
+    return 'HILLS';
+  }
+
+  /**
+   * Positions a single tree ensuring biome-specific tree types and dry ground placement:
+   * - "w" shallow waters: sparse palm trees on coastal beach sand
+   * - "h" and "H" hills: classic deciduous oak trees
+   * - "m" mountain (low): coniferous evergreen pine trees
+   * - "M" mountain (high): snow-covered pine trees
+   * - "s" sky / clouds: strictly no trees
+   */
+  private positionSingleTree(tree: THREE.Object3D, z: number) {
+    const pathPt = flightPath.getPoint(z);
+    const weights = flightPath.getBiomeWeights(pathPt.x, z);
+    const isRiverOrCanyon = weights.primaryBiome ? weights.primaryBiome.hasRiver() : false;
+    const isClouds =
+      (weights.clouds || 0) > 0.001 ||
+      weights.primary === 'HIGH_CLOUDS' ||
+      weights.primaryBiome?.char === 's';
+
+    // No trees in the clouds biome ("s")
+    if (isClouds) {
+      tree.position.set(pathPt.x + 18.0, WATER_LEVEL - 50, z);
+      tree.visible = false;
+      return;
+    }
+
+    const isDeepWater =
+      (weights.waterDeep || 0) > 0.001 ||
+      weights.primary === 'DEEP_WATERS' ||
+      weights.primaryBiome?.char === 'W';
+
+    if (isDeepWater) {
+      tree.position.set(pathPt.x + 18.0, WATER_LEVEL - 50, z);
+      tree.visible = false;
+      return;
+    }
+
+    const isShallowWater =
+      (weights.waterShallow || 0) > 0.001 ||
+      weights.primary === 'SHALLOW_WATERS' ||
+      weights.primaryBiome?.char === 'w';
+
+    const minOffset = isRiverOrCanyon ? 24.0 : 14.0;
+
+    let bestX = pathPt.x + 18.0;
+    let bestY = -999;
+    let foundDryLand = false;
+    let chosenVariant: 'HILLS' | 'PALM' | 'PINE' | 'SNOW_PINE' = 'HILLS';
+
+    // Probe lateral candidate offsets to find dry ground above water level
+    for (let attempt = 0; attempt < 14; attempt++) {
+      const side = attempt % 2 === 0 ? 1 : -1;
+      const spread = minOffset + Math.random() * (isShallowWater ? 44.0 : 34.0);
+      const candX = pathPt.x + side * spread;
+      const candWeights = flightPath.getBiomeWeights(candX, z);
+      const variant = this.determineTreeVariant(candWeights, candX, z);
+
+      if (variant === 'NONE') {
+        continue;
+      }
+
+      // Sparse check for palm trees in "w" shallow waters:
+      // Only ~35% of candidate positions on beach sand spawn a palm tree
+      if (variant === 'PALM') {
+        const palmSparseHash = Math.abs(Math.sin(candX * 12.9898 + z * 78.233) * 43758.5453);
+        const isSparsePalm = (palmSparseHash - Math.floor(palmSparseHash)) < 0.35;
+        if (!isSparsePalm) {
+          continue; // Leave sandy shorelines open and delightfully sparse
+        }
+      }
+
+      const candY = flightPath.getTerrainHeight(candX, z);
+      const minDryHeight = variant === 'PALM' ? (WATER_LEVEL + 0.35) : (WATER_LEVEL + 0.6);
+
+      // Must be safely above sea level (WATER_LEVEL) - never submerged in water!
+      if (candY > minDryHeight) {
+        bestX = candX;
+        bestY = candY;
+        chosenVariant = variant;
+        foundDryLand = true;
+        break;
+      } else if (candY > bestY) {
+        bestX = candX;
+        bestY = candY;
+        chosenVariant = variant;
+      }
+    }
+
+    if (foundDryLand) {
+      this.setTreeVariant(tree as THREE.Group, chosenVariant);
+      tree.position.set(bestX, bestY, z);
+      tree.visible = true;
+    } else {
+      // Entire basin/area is submerged beneath sea level or in treeless zone
+      tree.position.set(bestX, WATER_LEVEL - 50, z);
+      tree.visible = false;
+    }
+  }
+
   private createTrees() {
-    // Voxel Oak & Spruce Trees: cubic wood trunks and stepped block leaf canopies
-    const trunkGeo = new THREE.BoxGeometry(0.65, 2.2, 0.65);
-    const trunkMat = new THREE.MeshStandardMaterial({ color: 0x6d4c2b, roughness: 0.9, flatShading: true });
-
-    const foliageBaseGeo = new THREE.BoxGeometry(2.4, 1.6, 2.4);
-    const foliageTopGeo = new THREE.BoxGeometry(1.4, 1.0, 1.4);
-    const foliageMat = new THREE.MeshStandardMaterial({ color: 0x3d7326, roughness: 0.85, flatShading: true });
-
-    // 55 stylized alpine trees distributed from -60 to +240m
-    for (let i = 0; i < 55; i++) {
-      const tree = new THREE.Group();
-      const trunk = new THREE.Mesh(trunkGeo, trunkMat);
-      trunk.position.y = 1.1;
-      trunk.castShadow = true;
-      trunk.receiveShadow = true;
-      tree.add(trunk);
-
-      const foliageBase = new THREE.Mesh(foliageBaseGeo, foliageMat);
-      foliageBase.position.y = 2.4;
-      foliageBase.castShadow = true;
-      foliageBase.receiveShadow = true;
-      tree.add(foliageBase);
-
-      const foliageTop = new THREE.Mesh(foliageTopGeo, foliageMat);
-      foliageTop.position.y = 3.4;
-      foliageTop.castShadow = true;
-      foliageTop.receiveShadow = true;
-      tree.add(foliageTop);
-
-      const z = -60 + (i / 55) * 300;
-      const pathPt = flightPath.getPoint(z);
-      const tempWeights = flightPath.getBiomeWeights(pathPt.x, z);
-
-      // In deep canyon / river slots, ensure trees stay on the high mesa rim rather than inside the flight channel
-      const isRiverOrCanyon = tempWeights.primaryBiome ? tempWeights.primaryBiome.hasRiver() : false;
-      const minOffset = isRiverOrCanyon ? 24.0 : 14.0;
-      const side = Math.random() > 0.5 ? 1 : -1;
-      const offsetX = side * (minOffset + Math.random() * 34);
-
-      const x = pathPt.x + offsetX;
-      const y = flightPath.getTerrainHeight(x, z);
-
-      tree.position.set(x, y, z);
-      const s = 0.7 + Math.random() * 0.6;
+    // 65 stylized biome-specific trees distributed across active conveyor span (-60 to +240m)
+    for (let i = 0; i < 65; i++) {
+      const tree = this.createTreeObject();
+      const z = -60 + (i / 65) * 300;
+      this.positionSingleTree(tree, z);
+      const s = 0.75 + Math.random() * 0.5;
       tree.scale.set(s, s, s);
       this.treesGroup.add(tree);
     }
@@ -486,14 +1187,7 @@ export class EnvironmentManager {
     const treeCount = this.treesGroup.children.length;
     this.treesGroup.children.forEach((tree, idx) => {
       const z = startZ - 60 + (idx / treeCount) * 300;
-      const pathPt = flightPath.getPoint(z);
-      const tempWeights = flightPath.getBiomeWeights(pathPt.x, z);
-      const isRiverOrCanyon = tempWeights.primaryBiome ? tempWeights.primaryBiome.hasRiver() : false;
-      const minOffset = isRiverOrCanyon ? 24.0 : 14.0;
-      const side = Math.random() > 0.5 ? 1 : -1;
-      const offsetX = side * (minOffset + Math.random() * 34);
-      const x = pathPt.x + offsetX;
-      tree.position.set(x, flightPath.getTerrainHeight(x, z), z);
+      this.positionSingleTree(tree, z);
     });
 
     this.cloudSystem.reposition(startZ, startX);
@@ -523,6 +1217,7 @@ export class EnvironmentManager {
         chunk.centerX = gx * this.chunkWidth;
         chunk.centerZ = gz * this.chunkLength;
         chunk.mesh.position.set(chunk.centerX, 0, chunk.centerZ);
+        chunk.waterMesh.position.set(chunk.centerX, 0, chunk.centerZ);
         this.populateChunk(chunk);
       }
     }
@@ -546,6 +1241,7 @@ export class EnvironmentManager {
     const rows = this.chunkLengthSegments + 1; // 31
     const meshX = chunk.centerX;
     const meshZ = chunk.centerZ;
+    let minH = Infinity;
 
     for (let r = 0; r < rows; r++) {
       const rowStart = r * cols;
@@ -561,6 +1257,7 @@ export class EnvironmentManager {
         const vertexWeights = flightPath.getBiomeWeights(worldX, worldZ);
         const h = flightPath.getTerrainHeight(worldX, worldZ, vertexWeights, branches);
         posArray[idx + 1] = h;
+        if (h < minH) minH = h;
 
         // Distance to closest active branch (where pillars are located)
         let distToBranch = Math.abs(worldX - branches[0].point.x);
@@ -618,6 +1315,112 @@ export class EnvironmentManager {
     colorAttr.needsUpdate = true;
     chunk.geometry.computeBoundingBox();
     chunk.geometry.computeBoundingSphere();
+
+    // 1. Update world-space continuous UV coordinates for the water surface
+    const waterUvArray = chunk.waterUvAttr.array as Float32Array;
+    const beachWeights = chunk.waterBeachWeightAttr.array as Float32Array;
+    const depths = chunk.waterDepthAttr.array as Float32Array;
+    beachWeights.fill(0);
+
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const vIdx = r * cols + c;
+        const wx = ((c / (cols - 1)) - 0.5) * this.chunkWidth + meshX;
+        const wz = ((r / (rows - 1)) - 0.5) * this.chunkLength + meshZ;
+        waterUvArray[vIdx * 2] = wx * 0.1;
+        waterUvArray[vIdx * 2 + 1] = wz * 0.1;
+
+        const h = posArray[vIdx * 3 + 1];
+        depths[vIdx] = Math.max(0, WATER_LEVEL - h);
+      }
+    }
+    chunk.waterUvAttr.needsUpdate = true;
+
+    // 2. Reconstruct water index buffer:
+    // Check if the chunk has water biomes or submerged terrain
+    const centerWeights = flightPath.getBiomeWeights(chunk.centerX, chunk.centerZ);
+    const hasWaterBiome =
+      (centerWeights.waterDeep || 0) > 0.001 ||
+      (centerWeights.waterShallow || 0) > 0.001 ||
+      centerWeights.primary === 'SHALLOW_WATERS' ||
+      centerWeights.primary === 'DEEP_WATERS';
+    const chunkHasWater = (minH <= WATER_LEVEL + 0.1) || hasWaterBiome;
+
+    const waterIndices = chunk.waterIndices;
+    let waterIndexCount = 0;
+    const COPLANAR_TOLERANCE = 0.05;
+
+    if (chunkHasWater) {
+      for (let r = 0; r < rows - 1; r++) {
+        const rowA = r * cols;
+        const rowB = (r + 1) * cols;
+        for (let c = 0; c < cols - 1; c++) {
+          const iA = rowA + c;
+          const iB = rowB + c;
+          const iC = rowB + (c + 1);
+          const iD = rowA + (c + 1);
+
+          const hA = posArray[iA * 3 + 1];
+          const hB = posArray[iB * 3 + 1];
+          const hC = posArray[iC * 3 + 1];
+          const hD = posArray[iD * 3 + 1];
+
+          // Triangle 1: (iA, iB, iD)
+          // If co-planar with water surface, render only the terrain polys.
+          // If emerging at/above sea level or submerged, continue to generate water face.
+          const isCoplanar1 =
+            Math.abs(hA - WATER_LEVEL) < COPLANAR_TOLERANCE &&
+            Math.abs(hB - WATER_LEVEL) < COPLANAR_TOLERANCE &&
+            Math.abs(hD - WATER_LEVEL) < COPLANAR_TOLERANCE;
+
+          if (!isCoplanar1) {
+            waterIndices[waterIndexCount++] = iA;
+            waterIndices[waterIndexCount++] = iB;
+            waterIndices[waterIndexCount++] = iD;
+
+            // Beach wave emergence: terrain face emerges from below to at/above sea level
+            const minH1 = Math.min(hA, hB, hD);
+            const maxH1 = Math.max(hA, hB, hD);
+            if (minH1 < WATER_LEVEL && maxH1 >= WATER_LEVEL - 0.04) {
+              beachWeights[iA] = 1.0;
+              beachWeights[iB] = 1.0;
+              beachWeights[iD] = 1.0;
+            }
+          }
+
+          // Triangle 2: (iB, iC, iD)
+          // If co-planar with water surface, render only the terrain polys.
+          // If emerging at/above sea level or submerged, continue to generate water face.
+          const isCoplanar2 =
+            Math.abs(hB - WATER_LEVEL) < COPLANAR_TOLERANCE &&
+            Math.abs(hC - WATER_LEVEL) < COPLANAR_TOLERANCE &&
+            Math.abs(hD - WATER_LEVEL) < COPLANAR_TOLERANCE;
+
+          if (!isCoplanar2) {
+            waterIndices[waterIndexCount++] = iB;
+            waterIndices[waterIndexCount++] = iC;
+            waterIndices[waterIndexCount++] = iD;
+
+            // Beach wave emergence: terrain face emerges from below to at/above sea level
+            const minH2 = Math.min(hB, hC, hD);
+            const maxH2 = Math.max(hB, hC, hD);
+            if (minH2 < WATER_LEVEL && maxH2 >= WATER_LEVEL - 0.04) {
+              beachWeights[iB] = 1.0;
+              beachWeights[iC] = 1.0;
+              beachWeights[iD] = 1.0;
+            }
+          }
+        }
+      }
+    }
+
+    chunk.waterBeachWeightAttr.needsUpdate = true;
+    chunk.waterDepthAttr.needsUpdate = true;
+    chunk.waterGeometry.setDrawRange(0, waterIndexCount);
+    chunk.waterIndexAttr.needsUpdate = true;
+    chunk.waterGeometry.computeBoundingBox();
+    chunk.waterGeometry.computeBoundingSphere();
+    chunk.waterMesh.visible = waterIndexCount > 0;
   }
 
   public updateTerrain(birdZ: number, force: boolean = false, delta: number = 0.016, birdX?: number) {
@@ -625,12 +1428,18 @@ export class EnvironmentManager {
     const targetBirdX = (birdX !== undefined) ? birdX : (flightPath.getPoint(birdZ)?.x ?? 0);
     this.lastBirdX = targetBirdX;
 
+    // Advance water shader time uniform for beach waves & rhythmic shoreline surf
+    this.waterTime += delta;
+    if (this.waterMaterial.userData.shader?.uniforms?.uTime) {
+      this.waterMaterial.userData.shader.uniforms.uTime.value = this.waterTime;
+    }
+
     // =======================================================
     // DYNAMIC ATMOSPHERE, SKY & FOG ACCORDING TO ACTIVE BIOME
     // (Lightweight scalar interpolation - smooth every frame)
     // =======================================================
     const birdBiome = flightPath.getBiomeWeights(targetBirdX, birdZ);
-    this.cloudSystem.update(delta, birdZ, birdBiome, targetBirdX);
+    this.cloudSystem.update(delta, birdZ, birdBiome, targetBirdX, flightPath);
     const targetSky = new THREE.Color();
     const targetFog = new THREE.Color();
     const targetGround = new THREE.Color();
@@ -673,7 +1482,11 @@ export class EnvironmentManager {
 
     this.scene.background = targetSky;
     if (this.scene.fog && (this.scene.fog as THREE.Fog).isFog) {
-      (this.scene.fog as THREE.Fog).color.copy(targetFog);
+      const fog = this.scene.fog as THREE.Fog;
+      fog.color.copy(targetFog);
+      const cloudsW = birdBiome.clouds || 0;
+      fog.near = 28 - cloudsW * 6;
+      fog.far = 145 - cloudsW * 30; // 115m in clouds to clearly view mountain peaks below
     }
     this.hemiLight.groundColor.copy(targetGround);
 
@@ -683,17 +1496,16 @@ export class EnvironmentManager {
     this.dirLight.target.updateMatrixWorld();
 
     // Trees are recycled behind camera directly into far distance (>165m)
+    // positioning them safely on dry land and never in water or clouds
     this.treesGroup.children.forEach((tree) => {
       if (tree.position.z < birdZ - 65) {
         const newZ = birdZ + 165 + Math.random() * 75;
-        const pathPt = flightPath.getPoint(newZ);
-        const weights = flightPath.getBiomeWeights(pathPt.x, newZ);
-        const isRiverOrCanyon = weights.primaryBiome ? weights.primaryBiome.hasRiver() : false;
-        const minOffset = isRiverOrCanyon ? 24.0 : 14.0;
-        const side = Math.random() > 0.5 ? 1 : -1;
-        const offsetX = side * (minOffset + Math.random() * 34);
-        const newX = pathPt.x + offsetX;
-        tree.position.set(newX, flightPath.getTerrainHeight(newX, newZ), newZ);
+        this.positionSingleTree(tree, newZ);
+      } else if (tree.visible) {
+        const w = flightPath.getBiomeWeights(tree.position.x, tree.position.z);
+        if ((w.clouds || 0) > 0.001 || w.primary === 'HIGH_CLOUDS' || (w.primaryBiome && !w.primaryBiome.hasTrees())) {
+          tree.visible = false;
+        }
       }
     });
 
@@ -717,6 +1529,7 @@ export class EnvironmentManager {
           chunk.centerX = gx * this.chunkWidth;
           chunk.centerZ = gz * this.chunkLength;
           chunk.mesh.position.set(chunk.centerX, 0, chunk.centerZ);
+          chunk.waterMesh.position.set(chunk.centerX, 0, chunk.centerZ);
           this.populateChunk(chunk);
         }
       }
@@ -726,9 +1539,21 @@ export class EnvironmentManager {
         const riverSlot = this.mod(gz, 5);
         this.canyonRiver.populateRiverChunk(riverSlot, riverCenterZ, this.chunkLength);
       }
-      // Update all tree heights so they rest accurately on updated or restored terrain
+      // Update all tree heights so they rest accurately on updated or restored terrain and set biome variants
       this.treesGroup.children.forEach((tree) => {
-        tree.position.y = flightPath.getTerrainHeight(tree.position.x, tree.position.z);
+        const y = flightPath.getTerrainHeight(tree.position.x, tree.position.z);
+        tree.position.y = y;
+        const w = flightPath.getBiomeWeights(tree.position.x, tree.position.z);
+        const variant = this.determineTreeVariant(w, tree.position.x, tree.position.z);
+        if (variant === 'NONE') {
+          tree.visible = false;
+        } else {
+          const minDryHeight = variant === 'PALM' ? (WATER_LEVEL + 0.35) : (WATER_LEVEL + 0.6);
+          tree.visible = y > minDryHeight;
+          if (tree.visible) {
+            this.setTreeVariant(tree as THREE.Group, variant);
+          }
+        }
       });
       return;
     }
@@ -754,6 +1579,7 @@ export class EnvironmentManager {
           chunk.centerX = gx * this.chunkWidth;
           chunk.centerZ = gz * this.chunkLength;
           chunk.mesh.position.set(chunk.centerX, 0, chunk.centerZ);
+          chunk.waterMesh.position.set(chunk.centerX, 0, chunk.centerZ);
           this.populateChunk(chunk);
 
           if (!updatedRiverRows.has(gz)) {
@@ -996,6 +1822,12 @@ export class EnvironmentManager {
 
     // Update Canyon River flow & Rapids churning animation
     this.canyonRiver.update(delta);
+
+    // Update water surface texture animation (gentle ocean swell drift across the water basins)
+    if (this.waterTexture) {
+      this.waterTexture.offset.x += delta * 0.015;
+      this.waterTexture.offset.y += delta * 0.025;
+    }
 
     // Stream and render prior crash feathers in the terrain
     this.featherManager.updateTerrainFeathers(birdDistance);

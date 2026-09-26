@@ -35,7 +35,25 @@ export class FlightPathHistoryManager {
       if (raw) {
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed)) {
-          this.flights = parsed;
+          let modified = false;
+          this.flights = parsed
+            .filter((f) => f && f.id !== 'active-live-flight')
+            .map((f: RecordedFlightPath) => {
+              const startDist = f.startDistance ?? ((f.startLevel ?? 0) * LEVEL_LENGTH);
+              // Migrate legacy flights where distance recorded absolute path coordinate instead of distance flown
+              if (startDist > 0 && f.distance >= startDist) {
+                modified = true;
+                return {
+                  ...f,
+                  distance: Math.max(1, f.distance - startDist),
+                  maxLevel: Math.max(f.startLevel ?? 0, Math.floor(f.distance / LEVEL_LENGTH)),
+                };
+              }
+              return f;
+            });
+          if (modified) {
+            this.saveToStorage();
+          }
           return;
         }
       }
@@ -182,10 +200,11 @@ export const flightPathHistory = new FlightPathHistoryManager();
  * Rules:
  * 1. Level 0 Origin ("0-2") is always entered / unlocked as the foundational start.
  * 2. If a flight started at a custom start tile, that tile is entered.
- * 3. A flight enters a subsequent tile (L, col) if and only if:
- *    - The flight physically reached the starting junction of (L, col) at distance L * LEVEL_LENGTH.
- *    - The flight actually flew into that tile along that tile's checkerboard branch trajectory.
- * 4. Mid-level slalom wiggles from adjacent tiles wandering across boundaries DO NOT count.
+ * 3. When a flight makes it past a decision point (at distance (L + 1) * LEVEL_LENGTH),
+ *    both directions (LEFT and RIGHT) originating from that decision point junction are unlocked,
+ *    even if the flight physically chose only one of them.
+ * 4. Subsequent decision points along the flight's chosen trajectory continue to unlock both
+ *    diverging branches for each decision point reached.
  */
 export function getEnteredStartTiles(flights: RecordedFlightPath[]): Set<string> {
   const entered = new Set<string>();
@@ -196,57 +215,17 @@ export function getEnteredStartTiles(flights: RecordedFlightPath[]): Set<string>
   for (const flight of flights) {
     const startLvl = flight.startLevel ?? 0;
     const startCol = flight.startCol ?? 2;
-    const totalDist = Math.max(0, flight.distance);
+    const startDist = flight.startDistance ?? (startLvl * LEVEL_LENGTH);
+    const totalDist = startDist + Math.max(0, flight.distance);
+
+    let lvl: number;
+    let gx: number;
 
     if (startLvl === 0) {
       entered.add('0-2');
-
-      // Check if this flight reached the end of Level 0 / start of Level 1 (250m)
-      if (totalDist >= LEVEL_LENGTH) {
-        // Exit of Level 0 is at gx = 3
-        const currentGx = 3;
-        const branch1 = flight.branches?.[1] || 'RIGHT';
-        if (branch1 === 'LEFT') {
-          // Column 3 (col = 2): lower-right start at gx = 3
-          entered.add('1-2');
-        } else {
-          // Column 4 (col = 3): lower-left start at gx = 3
-          entered.add('1-3');
-        }
-
-        // Trace subsequent levels reached by this flight
-        let lvl = 1;
-        let gx = branch1 === 'LEFT' ? currentGx - 1 : currentGx + 1; // 2 or 4
-
-        while (totalDist >= (lvl + 1) * LEVEL_LENGTH) {
-          const nextLvl = lvl + 1;
-          let nextBranch: 'LEFT' | 'RIGHT' = flight.branches?.[nextLvl] || 'RIGHT';
-          if (gx <= 0) {
-            nextBranch = 'RIGHT';
-          } else if (gx >= 6) {
-            nextBranch = 'LEFT';
-          }
-
-          if (nextBranch === 'LEFT') {
-            const nextCol = gx - 1;
-            if (nextCol >= 0 && nextCol <= 5) {
-              entered.add(`${nextLvl}-${nextCol}`);
-              gx = gx - 1;
-            } else {
-              break;
-            }
-          } else {
-            const nextCol = gx;
-            if (nextCol >= 0 && nextCol <= 5) {
-              entered.add(`${nextLvl}-${nextCol}`);
-              gx = gx + 1;
-            } else {
-              break;
-            }
-          }
-          lvl = nextLvl;
-        }
-      }
+      lvl = 0;
+      // Exit junction of Level 0 is at gx = 3
+      gx = 3;
     } else {
       // Flight started at custom start tile
       entered.add(`${startLvl}-${startCol}`);
@@ -255,38 +234,44 @@ export function getEnteredStartTiles(flights: RecordedFlightPath[]): Set<string>
       const isStartEven = (startLvl + mapCol) % 2 === 0;
       const expectedStartBranch: 'LEFT' | 'RIGHT' = isStartEven ? 'LEFT' : 'RIGHT';
 
-      // Exit gx of the start level
-      let gx = expectedStartBranch === 'LEFT' ? startCol : startCol + 1;
-      let lvl = startLvl;
+      // Exit gx of the custom start level
+      gx = expectedStartBranch === 'LEFT' ? startCol : startCol + 1;
+      lvl = startLvl;
+    }
 
-      while (totalDist >= (lvl + 1) * LEVEL_LENGTH) {
-        const nextLvl = lvl + 1;
-        let nextBranch: 'LEFT' | 'RIGHT' = flight.branches?.[nextLvl] || 'RIGHT';
-        if (gx <= 0) {
-          nextBranch = 'RIGHT';
-        } else if (gx >= 6) {
-          nextBranch = 'LEFT';
-        }
+    // Traverse decision points reached by this flight.
+    // The player MUST reach the decision point at distance (lvl + 1) * LEVEL_LENGTH
+    // for the two subsequent directions (left and right) to be unlocked:
+    while (totalDist >= (lvl + 1) * LEVEL_LENGTH - 0.5) {
+      const nextLvl = lvl + 1;
 
-        if (nextBranch === 'LEFT') {
-          const nextCol = gx - 1;
-          if (nextCol >= 0 && nextCol <= 5) {
-            entered.add(`${nextLvl}-${nextCol}`);
-            gx = gx - 1;
-          } else {
-            break;
-          }
-        } else {
-          const nextCol = gx;
-          if (nextCol >= 0 && nextCol <= 5) {
-            entered.add(`${nextLvl}-${nextCol}`);
-            gx = gx + 1;
-          } else {
-            break;
-          }
-        }
-        lvl = nextLvl;
+      // When the player makes it past the decision point at distance (lvl + 1) * LEVEL_LENGTH,
+      // unlock BOTH directions (left and right) from junction gx:
+      // Left direction:
+      const leftCol = gx - 1;
+      if (leftCol >= 0 && leftCol <= 5) {
+        entered.add(`${nextLvl}-${leftCol}`);
       }
+
+      // Right direction:
+      const rightCol = gx;
+      if (rightCol >= 0 && rightCol <= 5) {
+        entered.add(`${nextLvl}-${rightCol}`);
+      }
+
+      // Determine which branch the flight actually followed to trace future decision points
+      let nextBranch: 'LEFT' | 'RIGHT' = flight.branches?.[nextLvl] || 'RIGHT';
+      if (gx <= 0) {
+        nextBranch = 'RIGHT';
+      } else if (gx >= 6) {
+        nextBranch = 'LEFT';
+      }
+
+      gx = nextBranch === 'LEFT' ? gx - 1 : gx + 1;
+      if (gx < 0 || gx > 6) {
+        break;
+      }
+      lvl = nextLvl;
     }
   }
 

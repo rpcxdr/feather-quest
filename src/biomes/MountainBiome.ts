@@ -18,6 +18,10 @@ export class MountainBiome extends Biome {
     this.name = name;
   }
 
+  public override getPreferredAltitude(): number {
+    return this.char === 'm' ? 0.64 : 0.74;
+  }
+
   public getPathUndulation(z: number): number {
     // Incommensurate prime wavelengths (383m, 211m, 139m, 757m)
     // Completely non-repeating across 250m intervals

@@ -2,9 +2,11 @@ import { Biome } from './Biome';
 import { HillsBiome } from './HillsBiome';
 import { MountainBiome } from './MountainBiome';
 import { CanyonBiome } from './CanyonBiome';
+import { WaterBiome } from './WaterBiome';
+import { CloudsBiome } from './CloudsBiome';
 
 export interface BiomeWeightsResult {
-  // Relative weight map keyed by biome character (e.g. 'H', 'h', 'M', 'm', 'C', 'c')
+  // Relative weight map keyed by biome character (e.g. 'H', 'h', 'M', 'm', 'C', 'c', 'W', 'w')
   weights: Map<Biome, number>;
   // Convenient category sums
   hills: number;
@@ -13,7 +15,10 @@ export interface BiomeWeightsResult {
   mountainLow: number;
   canyon: number;
   canyonLow: number;
-  primary: 'ROLLING_HILLS' | 'RUGGED_MOUNTAIN' | 'DEEP_CANYON_SLOTS';
+  waterDeep: number;
+  waterShallow: number;
+  clouds: number;
+  primary: 'ROLLING_HILLS' | 'RUGGED_MOUNTAIN' | 'DEEP_CANYON_SLOTS' | 'SHALLOW_WATERS' | 'DEEP_WATERS' | 'HIGH_CLOUDS';
   primaryBiome: Biome;
 }
 
@@ -56,7 +61,7 @@ export class BiomeRegistry {
     return this.defaultBiome;
   }
 
-  public getByCategory(category: 'HILLS' | 'MOUNTAIN' | 'CANYON'): Biome[] {
+  public getByCategory(category: 'HILLS' | 'MOUNTAIN' | 'CANYON' | 'WATER' | 'CLOUDS'): Biome[] {
     return this.biomes.filter((b) => b.category === category);
   }
 
@@ -76,12 +81,15 @@ export const biomeRegistry = new BiomeRegistry();
 
 /**
  * Standard initialization of active game biomes:
- * 'H' - Large Rolling Hills (scale 2.0)
+ * 'H' - Large Rolling Hills (scale 1.0)
  * 'h' - Small Rolling Hills (scale 0.75)
  * 'M' - Large Mountains (scale 1.0)
  * 'm' - Small Mountains (scale 0.75)
  * 'C' - Deep Canyon Slots (scale 1.0)
- * 'c' - Shallow Canyons (scale 0.75)
+ * 'c' - Deep Canyon Slots (small, scale 0.75)
+ * 's' - Sky / High Clouds (scale 1.0)
+ * 'W' - Deep Waters (scale 1.5)
+ * 'w' - Shallow Waters (scale 1.0)
  */
 export function registerDefaultBiomes(registry: BiomeRegistry = biomeRegistry): void {
   registry.clear();
@@ -98,12 +106,22 @@ export function registerDefaultBiomes(registry: BiomeRegistry = biomeRegistry): 
   const canyonLarge = new CanyonBiome('C', 1.0, 'Deep Canyon Slots (Large)');
   const canyonSmall = new CanyonBiome('c', 0.75, 'Deep Canyon Slots (Small)');
 
+  // 4. Waters
+  const waterDeep = new WaterBiome('W', 1.5, 'Deep Waters');
+  const waterShallow = new WaterBiome('w', 1.0, 'Shallow Waters');
+
+  // 5. Sky / Clouds
+  const cloudsBiome = new CloudsBiome('s', 1.0, 'Sky / Clouds');
+
   registry.register(hillsLarge, true); // HillsLarge as default
   registry.register(hillsSmall);
   registry.register(mountainLarge);
   registry.register(mountainSmall);
   registry.register(canyonLarge);
   registry.register(canyonSmall);
+  registry.register(cloudsBiome);
+  registry.register(waterDeep);
+  registry.register(waterShallow);
 }
 
 // Automatically register defaults on import

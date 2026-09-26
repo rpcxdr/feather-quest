@@ -2,7 +2,13 @@ import * as THREE from 'three';
 import { terrainMap, TILE_SIZE, getBiomeFromMap } from './map';
 import { Biome, biomeRegistry } from '../biomes';
 
-export type TerrainType = 'ROLLING_HILLS' | 'RUGGED_MOUNTAIN' | 'DEEP_CANYON_SLOTS';
+export type TerrainType =
+  | 'ROLLING_HILLS'
+  | 'RUGGED_MOUNTAIN'
+  | 'DEEP_CANYON_SLOTS'
+  | 'SHALLOW_WATERS'
+  | 'DEEP_WATERS'
+  | 'HIGH_CLOUDS';
 
 export const LEVEL_LENGTH = 250.0; // Exactly 10 tiles (250m)
 export const MAP_TILE_SIZE = 25.0; // 25m per tile
@@ -33,6 +39,9 @@ export interface BiomeWeights {
   mountainLow: number;
   canyon: number;
   canyonLow: number;
+  waterDeep?: number;
+  waterShallow?: number;
+  clouds?: number;
   primary: TerrainType;
   primaryBiome?: Biome;
   biomeWeights?: Map<Biome, number>;
@@ -47,7 +56,39 @@ export interface PathFrame {
   elevationSlope: number;
 }
 
+/**
+ * Static deterministic pseudo-random number generator using the same formula
+ * as the flight path (seeded from x, z).
+ */
+export function pseudoRandom(seed: number): number {
+  const s = Math.sin(seed) * 43758.5453123;
+  return s - Math.floor(s);
+}
+
+/**
+ * Derives a deterministic integer seed from world (x, z) coordinates and an optional extra modifier.
+ */
+export function getCoordinateSeed(x: number, z: number, extra: number = 0): number {
+  const mZ = terrainMap.length;
+  const mX = terrainMap[0]?.length ?? 16;
+  const tileX = Math.floor(mX / 2 + x / TILE_SIZE);
+  const tileY = Math.floor(mZ - z / TILE_SIZE);
+  return (
+    ((tileX & 0xffff) * 374761393 +
+      (tileY & 0xffff) * 668265263 +
+      extra * 1013904223) >>>
+    0
+  );
+}
+
 export class FlightPathGenerator {
+  public static pseudoRandom(seed: number): number {
+    return pseudoRandom(seed);
+  }
+
+  public static getSeed(x: number, z: number, extra: number = 0): number {
+    return getCoordinateSeed(x, z, extra);
+  }
   // Continuous 3D flight path adapting to 3 distinct terrain biomes over 750m (3 levels * 250m):
   // Level 0 (0 - 250m): Rolling Hills
   // Level 1 (250 - 500m): Rugged Mountain
@@ -267,18 +308,36 @@ export class FlightPathGenerator {
     const mountainLow = biomeWeightsMap.get(biomeRegistry.getByChar('m')!) || 0;
     const canyon = biomeWeightsMap.get(biomeRegistry.getByChar('C')!) || 0;
     const canyonLow = biomeWeightsMap.get(biomeRegistry.getByChar('c')!) || 0;
+    const clouds = biomeWeightsMap.get(biomeRegistry.getByChar('s')!) || 0;
+    const waterDeep = biomeWeightsMap.get(biomeRegistry.getByChar('W')!) || 0;
+    const waterShallow = biomeWeightsMap.get(biomeRegistry.getByChar('w')!) || 0;
 
     const totalHills = hills + hillsLow;
     const totalMountain = mountain + mountainLow;
     const totalCanyon = canyon + canyonLow;
+    const totalWater = waterDeep + waterShallow;
+    const totalClouds = clouds;
 
     let primary: TerrainType = 'ROLLING_HILLS';
     let primaryBiome: Biome = biomeRegistry.getByChar('H') || biomeRegistry.getDefault();
 
-    if (totalMountain > totalHills && totalMountain >= totalCanyon) {
+    const maxWeight = Math.max(totalHills, totalMountain, totalCanyon, totalWater, totalClouds);
+
+    if (maxWeight === totalClouds && totalClouds > 0.001) {
+      primary = 'HIGH_CLOUDS';
+      primaryBiome = biomeRegistry.getByChar('s')!;
+    } else if (maxWeight === totalWater && totalWater > 0.001) {
+      if (waterDeep >= waterShallow) {
+        primary = 'DEEP_WATERS';
+        primaryBiome = biomeRegistry.getByChar('W')!;
+      } else {
+        primary = 'SHALLOW_WATERS';
+        primaryBiome = biomeRegistry.getByChar('w')!;
+      }
+    } else if (maxWeight === totalMountain) {
       primary = 'RUGGED_MOUNTAIN';
       primaryBiome = mountain >= mountainLow ? biomeRegistry.getByChar('M')! : biomeRegistry.getByChar('m')!;
-    } else if (totalCanyon > totalHills && totalCanyon > totalMountain) {
+    } else if (maxWeight === totalCanyon) {
       primary = 'DEEP_CANYON_SLOTS';
       primaryBiome = canyon >= canyonLow ? biomeRegistry.getByChar('C')! : biomeRegistry.getByChar('c')!;
     } else {
@@ -293,6 +352,9 @@ export class FlightPathGenerator {
       mountainLow,
       canyon,
       canyonLow,
+      waterDeep,
+      waterShallow,
+      clouds,
       primary,
       primaryBiome,
       biomeWeights: biomeWeightsMap,
@@ -554,22 +616,9 @@ export class FlightPathGenerator {
     // and strictly 0 during Ease In (Col 9-10), preserving the smooth lead in and lead out.
     const envelope = this.getWiggleEnvelope(u);
 
-    // Compute tile coordinates (tileX, tileY) from map coordinates for random seeding:
-    // mapXCoord = mX / 2 + startX / TILE_SIZE; mapZCoord = mZ - (level * LEVEL_LENGTH) / TILE_SIZE
-    const mZ = terrainMap.length;
-    const mX = terrainMap[0]?.length ?? 16;
-    const tileX = Math.floor(mX / 2 + startX / TILE_SIZE);
-    const tileY = Math.floor(mZ - (level * LEVEL_LENGTH) / TILE_SIZE);
-
-    // Seeded pseudo-random generator using tile X and tile Y coordinates
-    const pseudoRandom = (seed: number) => {
-      const s = Math.sin(seed) * 43758.5453123;
-      return s - Math.floor(s);
-    };
-
-    // Deterministic random seed derived from both tile X and tile Y
+    // Deterministic random seed derived from world (startX, level * LEVEL_LENGTH) coordinates
     const branchMod = effectiveBranch === 'LEFT' ? 1.0 : effectiveBranch === 'RIGHT' ? 2.0 : 0.0;
-    const seed = (tileX & 0xffff) * 374761393 + (tileY & 0xffff) * 668265263 + branchMod * 1013904223;
+    const seed = FlightPathGenerator.getSeed(startX, level * LEVEL_LENGTH, branchMod);
 
     // Use the tile seed to dynamically sculpt the rhythm (frequencies), shape (phases), and amplitudes:
     // 1. Rhythms: vary frequency multipliers so wave cycles and turning points differ per level
@@ -602,24 +651,36 @@ export class FlightPathGenerator {
   }
 
   /**
-   * Continuous elevation Y along the path following the 3 biomes.
+   * Continuous elevation Y along the path following the biomes.
    * Samples along the true flight trajectory (x(z), z) and applies
-   * low-pass moving-average smoothing to eliminate any elevation discontinuities.
+   * low-pass moving-average filtering over a 56m forward/backward window (~2.67 columns).
+   * This ensures altitude transitions (such as climbing into and descending from the clouds)
+   * occur smoothly over two to three columns. Short cloud sections gracefully crest without forcing
+   * full altitude.
    */
   public getElevationY(z: number, x?: number): number {
-    // 5-point moving average filter over a 24m forward/backward window
-    // Weights: 0.1, 0.2, 0.4, 0.2, 0.1 (sum = 1.0)
-    const w0 = 0.4;
-    const w1 = 0.2;
-    const w2 = 0.1;
+    // 7-point Hann-weighted moving average filter over a 56m forward/backward window (~2.67 columns)
+    // Sample spacing = 7.0m (1/3 column). Offsets: 0, ±7m, ±14m, ±21m.
+    // Weights: cos^2 tapered window normalized strictly to 1.0 (w0 + 2*w1 + 2*w2 + 2*w3 = 1.0)
+    const w0 = 0.25;
+    const w1 = 0.213388;
+    const w2 = 0.125;
+    const w3 = 0.036612;
 
     const yMid = this.getRawElevationAt(z, x);
-    const yPrev1 = this.getRawElevationAt(z - 6.0, x);
-    const yNext1 = this.getRawElevationAt(z + 6.0, x);
-    const yPrev2 = this.getRawElevationAt(z - 12.0, x);
-    const yNext2 = this.getRawElevationAt(z + 12.0, x);
+    const yPrev1 = this.getRawElevationAt(z - 7.0, x);
+    const yNext1 = this.getRawElevationAt(z + 7.0, x);
+    const yPrev2 = this.getRawElevationAt(z - 14.0, x);
+    const yNext2 = this.getRawElevationAt(z + 14.0, x);
+    const yPrev3 = this.getRawElevationAt(z - 21.0, x);
+    const yNext3 = this.getRawElevationAt(z + 21.0, x);
 
-    return w0 * yMid + w1 * (yPrev1 + yNext1) + w2 * (yPrev2 + yNext2);
+    return (
+      w0 * yMid +
+      w1 * (yPrev1 + yNext1) +
+      w2 * (yPrev2 + yNext2) +
+      w3 * (yPrev3 + yNext3)
+    );
   }
 
   private getRawElevationAt(z: number, x?: number): number {
@@ -644,7 +705,10 @@ export class FlightPathGenerator {
         weights.mountain * (biomeRegistry.getByChar('M')?.getPathUndulation(z) ?? 0) +
         weights.mountainLow * (biomeRegistry.getByChar('m')?.getPathUndulation(z) ?? 0) +
         weights.canyon * (biomeRegistry.getByChar('C')?.getPathUndulation(z) ?? 0) +
-        weights.canyonLow * (biomeRegistry.getByChar('c')?.getPathUndulation(z) ?? 0);
+        weights.canyonLow * (biomeRegistry.getByChar('c')?.getPathUndulation(z) ?? 0) +
+        (weights.clouds || 0) * (biomeRegistry.getByChar('s')?.getPathUndulation(z) ?? 0) +
+        (weights.waterDeep || 0) * (biomeRegistry.getByChar('W')?.getPathUndulation(z) ?? 0) +
+        (weights.waterShallow || 0) * (biomeRegistry.getByChar('w')?.getPathUndulation(z) ?? 0);
     }
 
     return baseCorridorY + undulation;
@@ -918,6 +982,9 @@ export class FlightPathGenerator {
       const bm = biomeRegistry.getByChar('m');
       const bC = biomeRegistry.getByChar('C');
       const bc = biomeRegistry.getByChar('c');
+      const bs = biomeRegistry.getByChar('s');
+      const bW = biomeRegistry.getByChar('W');
+      const bw = biomeRegistry.getByChar('w');
 
       if (weights.hills > 0.001 && bH) natural += weights.hills * bH.getNaturalTerrainHeight(x, z, context);
       if (weights.hillsLow > 0.001 && bh) natural += weights.hillsLow * bh.getNaturalTerrainHeight(x, z, context);
@@ -925,6 +992,9 @@ export class FlightPathGenerator {
       if (weights.mountainLow > 0.001 && bm) natural += weights.mountainLow * bm.getNaturalTerrainHeight(x, z, context);
       if (weights.canyon > 0.001 && bC) natural += weights.canyon * bC.getNaturalTerrainHeight(x, z, context);
       if (weights.canyonLow > 0.001 && bc) natural += weights.canyonLow * bc.getNaturalTerrainHeight(x, z, context);
+      if ((weights.clouds || 0) > 0.001 && bs) natural += weights.clouds! * bs.getNaturalTerrainHeight(x, z, context);
+      if ((weights.waterDeep || 0) > 0.001 && bW) natural += weights.waterDeep! * bW.getNaturalTerrainHeight(x, z, context);
+      if ((weights.waterShallow || 0) > 0.001 && bw) natural += weights.waterShallow! * bw.getNaturalTerrainHeight(x, z, context);
     }
 
     return natural;
