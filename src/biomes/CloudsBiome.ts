@@ -24,23 +24,23 @@ export class CloudsBiome extends Biome {
   }
 
   /**
-   * Highest path elevation in the game, elevated above the mountain peaks:
-   * Base corridor is 15.0m; adding an undulation base of +42.0m lifts the path to ~57m,
-   * comfortably higher than the highest mountain peaks (which reach 44-48m).
+   * Highest path elevation in the game, elevated at about 40.0m:
+   * Base corridor is 15.0m; adding an undulation base of +25.0m sets the center elevation to ~40.0m,
+   * comfortably higher than the mountain peaks below (which reach 28-32m).
    * Altitude transitions into and out of clouds occur smoothly over two to three columns.
    */
   public getPathUndulation(z: number): number {
     const base =
-      42.0 +
-      Math.sin(z * 0.01524) * 2.8 +
-      Math.cos(z * 0.02781 + 1.2) * 1.8 +
-      Math.sin(z * 0.00689 - 0.4) * 2.2;
+      25.0 +
+      Math.sin(z * 0.01524) * 2.2 +
+      Math.cos(z * 0.02781 + 1.2) * 1.5 +
+      Math.sin(z * 0.00689 - 0.4) * 1.8;
     return base * this.scale;
   }
 
   /**
    * Terrain below is rugged alpine mountains:
-   * Majestic peaks reach 44-48m, passing safely beneath the ~57m flight path
+   * Majestic peaks reach 28-32m, passing safely beneath the ~40m flight path
    * so the player looks down through the clouds to see the mountain summits below.
    */
   public getNaturalTerrainHeight(x: number, z: number): number {
@@ -51,11 +51,11 @@ export class CloudsBiome extends Biome {
     const p2 = peakFreq2 * Math.sqrt(Math.sqrt(peakFreq2));
     const p3 = peakFreq3 * peakFreq3;
     const hMountain =
-      6.0 +
-      p1 * 22.0 +
-      p2 * 12.0 +
-      p3 * 6.0 +
-      Math.sin(z * 0.006837 + 0.8) * 3.0;
+      5.0 +
+      p1 * 14.0 +
+      p2 * 8.0 +
+      p3 * 4.0 +
+      Math.sin(z * 0.006837 + 0.8) * 2.0;
     return hMountain * this.scale;
   }
 

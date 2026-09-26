@@ -23,14 +23,24 @@ export class MountainBiome extends Biome {
   }
 
   public getPathUndulation(z: number): number {
-    // Incommensurate prime wavelengths (383m, 211m, 139m, 757m)
-    // Completely non-repeating across 250m intervals
+    // Low mountains ('m'): scale 0.75, nominal center ~16.9m, range ~6.5m to ~27.0m
+    if (this.char === 'm') {
+      const base =
+        2.5 +
+        Math.sin(z * 0.016405) * 6.0 +
+        Math.cos(z * 0.029778 + 1.1) * 3.8 +
+        Math.sin(z * 0.045203 - 0.6) * 2.2 +
+        Math.sin(z * 0.008300 + 0.4) * 3.0;
+      return base * this.scale;
+    }
+
+    // High Mountains ('M'): scale 1.0, center elevation 18.5m (15.0m base + 3.5m offset), range ~9.0m to 31.0m
     const base =
-      2.5 +
-      Math.sin(z * 0.016405) * 6.0 +
-      Math.cos(z * 0.029778 + 1.1) * 3.8 +
-      Math.sin(z * 0.045203 - 0.6) * 2.2 +
-      Math.sin(z * 0.008300 + 0.4) * 3.0;
+      3.5 +
+      Math.sin(z * 0.016405) * 5.0 +
+      Math.cos(z * 0.029778 + 1.1) * 3.3 +
+      Math.sin(z * 0.045203 - 0.6) * 1.8 +
+      Math.sin(z * 0.008300 + 0.4) * 2.4;
     return base * this.scale;
   }
 
