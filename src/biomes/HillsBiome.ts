@@ -18,6 +18,10 @@ export class HillsBiome extends Biome {
     this.name = name;
   }
 
+  public override getPreferredAltitude(): number {
+    return this.char === 'h' ? 0.37 : 0.46;
+  }
+
   public getPathUndulation(z: number): number {
     // Incommensurate prime wavelengths (431m, 197m, 109m, 883m)
     // completely eliminates periodic repetition across 250m levels

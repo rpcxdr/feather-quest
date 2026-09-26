@@ -69,40 +69,10 @@ export const MapModal: React.FC<MapModalProps> = ({
     return () => observer.disconnect();
   }, [isOpen]);
 
-  // Combine recorded flights from storage and active flight if in progress
+  // Saved flights from history (always genuine recorded flights in chronological order)
   const allDisplayFlights = useMemo(() => {
-    const saved = flightPathHistory.getAllFlightPaths();
-
-    // If there is an active flight in progress with distance > 0 that hasn't been saved yet
-    const hasUnsavedActiveFlight =
-      currentDistance > 5 &&
-      !saved.some((f) => Math.abs(f.distance - currentDistance) < 2 && f.score === currentScore);
-
-    if (hasUnsavedActiveFlight) {
-      const activeBranches: Record<number, 'LEFT' | 'RIGHT'> = {};
-      flightPath.chosenBranches.forEach((val, key) => {
-        activeBranches[key] = val;
-      });
-
-      const activeFlight: RecordedFlightPath = {
-        id: 'active-live-flight',
-        flightNumber: saved.length + 1,
-        timestamp: Date.now(),
-        dateStr: 'Current Flight',
-        score: currentScore,
-        distance: Math.floor(currentDistance),
-        maxLevel: Math.floor(currentDistance / LEVEL_LENGTH),
-        branches: activeBranches,
-        startDistance: (currentStartLevel ?? 0) * LEVEL_LENGTH,
-        startLevel: currentStartLevel ?? 0,
-        startCol: currentStartCol ?? 2,
-      };
-
-      return [...saved, activeFlight];
-    }
-
-    return saved;
-  }, [historyVersion, currentDistance, currentScore, currentStartLevel, currentStartCol]);
+    return flightPathHistory.getAllFlightPaths();
+  }, [historyVersion]);
 
   // (1) By default, highlight your most recent flight when opening or when flights change
   useEffect(() => {
@@ -110,7 +80,7 @@ export const MapModal: React.FC<MapModalProps> = ({
       const mostRecent = allDisplayFlights[allDisplayFlights.length - 1];
       setSelectedFlightId(mostRecent.id);
     }
-  }, [isOpen, historyVersion]);
+  }, [isOpen, historyVersion, allDisplayFlights.length]);
 
   // Best flight (highest distance)
   const bestFlightId = useMemo(() => {
@@ -130,16 +100,15 @@ export const MapModal: React.FC<MapModalProps> = ({
     for (const f of allDisplayFlights) {
       highestLevel = Math.max(highestLevel, f.maxLevel);
     }
-    const currentLvl = Math.floor(currentDistance / LEVEL_LENGTH);
     const startLvl = currentStartLevel ?? 0;
-    const maxLevel = Math.max(5, highestLevel, currentLvl, startLvl);
+    const maxLevel = Math.max(5, highestLevel, startLvl);
 
     const levels: number[] = [];
     for (let l = 0; l <= maxLevel; l++) {
       levels.push(l);
     }
     return { levels, maxLevel };
-  }, [allDisplayFlights, currentDistance, currentStartLevel]);
+  }, [allDisplayFlights, currentStartLevel]);
 
   const { levels } = levelsData;
 
@@ -236,7 +205,7 @@ export const MapModal: React.FC<MapModalProps> = ({
       const flightStartLvl = flight.startLevel ?? 0;
       const flightStartCol = flight.startCol ?? 2;
       const flightStartDist = flight.startDistance ?? (flightStartLvl * LEVEL_LENGTH);
-      const totalDist = Math.max(flightStartDist + 1, flight.distance);
+      const totalDist = flightStartDist + Math.max(1, flight.distance);
 
       const mapCol = flightStartCol + 1;
       const isStartEven = (flightStartLvl + mapCol) % 2 === 0;
@@ -567,7 +536,7 @@ export const MapModal: React.FC<MapModalProps> = ({
                             title={
                               isEntered
                                 ? `Level ${lvl}, Column ${col + 1}`
-                                : `Locked: You must enter the start of Level ${lvl}, Column ${col + 1} along a flight path to unlock starting here.`
+                                : `Locked: Fly past the decision point leading to Level ${lvl}, Column ${col + 1} to unlock starting here.`
                             }
                           >
                             {/* Center status badge */}

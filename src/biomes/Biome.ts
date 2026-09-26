@@ -36,7 +36,7 @@ export abstract class Biome {
   public abstract readonly id: string;
   public abstract readonly char: string;
   public abstract readonly name: string;
-  public abstract readonly category: 'HILLS' | 'MOUNTAIN' | 'CANYON';
+  public abstract readonly category: 'HILLS' | 'MOUNTAIN' | 'CANYON' | 'WATER' | 'CLOUDS';
 
   // Relative scale (e.g. 1.0 for standard, 0.75 for 25% lower, 2.0 for doubled)
   public readonly scale: number;
@@ -87,4 +87,14 @@ export abstract class Biome {
   public abstract getPillarVoxelColors(layer: number, isTop: boolean): VoxelColorSpec;
 
   public abstract getBaseVoxelColors(): VoxelColorSpec;
+
+  // --- 10. Vegetation / tree population support ---
+  public hasTrees(): boolean {
+    return true;
+  }
+
+  // --- 11. Preferred altitude in [0, 1] for procedural altitude-based selection ---
+  public getPreferredAltitude(): number {
+    return 0.5;
+  }
 }

@@ -18,6 +18,10 @@ export class CanyonBiome extends Biome {
     this.name = name;
   }
 
+  public override getPreferredAltitude(): number {
+    return this.char === 'c' ? 0.52 : 0.565;
+  }
+
   public getPathUndulation(z: number): number {
     // Incommensurate prime wavelengths (331m, 157m, 719m)
     // Non-repeating along the river canyon floor

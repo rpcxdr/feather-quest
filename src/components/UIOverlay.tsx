@@ -4,6 +4,7 @@ import { GameState, GameStats } from '../types';
 import { CloudDissolve } from './CloudDissolve';
 import { AmbientButtonClouds } from './AmbientButtonClouds';
 import { MapModal } from './MapModal';
+import { TatteredMapButton } from './TatteredMapButton';
 import { flightPathHistory } from '../game/flightPathHistory';
 import {
   Volume2,
@@ -346,30 +347,10 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({
 
       {/* Bottom Footer: Map Button on Home Page (if player has played) or Spacer */}
       {gameState === 'READY' && !isDissolving && hasPlayed ? (
-        <div className="relative z-20 flex flex-col items-center justify-center pb-2 sm:pb-4 pointer-events-none animate-fade-in shrink-0">
-          {/* Ambient Pulsing Halo Glow behind the Map Button */}
-          <div
-            className="absolute -inset-6 rounded-full bg-gradient-to-r from-amber-400/20 via-yellow-400/30 to-amber-500/20 blur-2xl pointer-events-none animate-halo-pulse"
+        <div className="relative z-20 flex flex-col items-center justify-center pb-1 sm:pb-3 pointer-events-none animate-fade-in shrink-0">
+          <TatteredMapButton
+            onClick={() => setIsMapOpen(true)}
           />
-
-          <button
-            id="btn-map-bottom"
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              setIsMapOpen(true);
-            }}
-            className="pointer-events-auto cursor-pointer relative group flex items-center justify-center w-60 h-22 sm:w-72 sm:h-26 md:w-80 md:h-28 rounded-full bg-gradient-to-b from-amber-300/85 via-amber-400/85 to-amber-500/85 opacity-85 backdrop-blur-sm border-2 border-amber-100/90 shadow-[0_0_50px_rgba(251,191,36,0.65),0_14px_32px_rgba(0,0,0,0.55)] transition-transform select-none animate-float-button hover:scale-105 hover:opacity-90 hover:shadow-[0_0_70px_rgba(251,191,36,0.85),0_18px_40px_rgba(0,0,0,0.65)] hover:brightness-105 active:scale-95"
-            aria-label="Open Flight Map"
-          >
-            {/* Top-rim glossy reflection */}
-            <div className="absolute inset-x-6 top-1.5 h-1/2 rounded-full bg-gradient-to-b from-white/45 to-transparent pointer-events-none" />
-
-            {/* Just "Map" in heavy, bold typography matching the Fly button */}
-            <span className="relative text-3xl sm:text-4xl md:text-5xl font-black uppercase tracking-widest text-slate-950 drop-shadow-[0_1px_1px_rgba(255,255,255,0.7)] group-hover:scale-105 transition-transform duration-150">
-              Map
-            </span>
-          </button>
         </div>
       ) : (
         <div className="h-2 z-20 shrink-0" />
@@ -427,7 +408,7 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({
                 </div>
                 <p className="font-bold text-sm text-emerald-300">All Records Cleared!</p>
                 <p className="text-xs text-slate-400 max-w-xs leading-relaxed">
-                  High score, all prior crash feathers, and the record horizon have been reset.
+                  Scores, flight map history, crash feathers, and horizon have been reset.
                 </p>
               </div>
             ) : showConfirmReset ? (
@@ -435,9 +416,9 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({
                 <div className="p-3.5 rounded-xl bg-rose-950/50 border border-rose-500/40 flex items-start gap-3">
                   <AlertTriangle className="w-5 h-5 text-rose-400 shrink-0 mt-0.5" />
                   <div className="flex flex-col text-left text-xs gap-1">
-                    <span className="font-bold text-rose-300 text-sm">Reset High Score?</span>
+                    <span className="font-bold text-rose-300 text-sm">Reset All Scores and Flights?</span>
                     <span className="text-rose-200/80 leading-relaxed">
-                      Are you sure you want to reset your high score? This will permanently clear your high score, all prior crash feathers, and the record horizon landmark. This action cannot be undone.
+                      Are you sure you want to reset all scores and flight records? This will permanently clear your high score, flight map history, all prior crash feathers, and the record horizon landmark. This action cannot be undone.
                     </span>
                   </div>
                 </div>
@@ -454,6 +435,8 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({
                     id="btn-confirm-reset"
                     onClick={() => {
                       onResetAllRecords();
+                      setHasPlayedSession(false);
+                      setIsMapOpen(false);
                       setResetSuccess(true);
                       setTimeout(() => {
                         setResetSuccess(false);
@@ -470,7 +453,7 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({
               </div>
             ) : (
               <div className="flex flex-col gap-3.5">
-                {/* Single Option: Reset High Score */}
+                {/* Single Option: Reset All Scores and Flights */}
                 <button
                   id="btn-option-reset-high-score"
                   onClick={() => setShowConfirmReset(true)}
@@ -482,10 +465,7 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({
                     </div>
                     <div className="flex flex-col">
                       <span className="font-semibold text-sm text-white group-hover:text-rose-200 transition-colors">
-                        Reset High Score
-                      </span>
-                      <span className="text-[11px] text-slate-400">
-                        Clears score, crash feathers & horizon
+                        Reset All Scores and Flights
                       </span>
                     </div>
                   </div>
