@@ -1013,6 +1013,11 @@ export class GameEngine {
         continue;
       }
 
+      // If the column was omitted as an obstacle (e.g. pitch > 30 degrees), skip pipe collision
+      if (obs.hasColumn === false) {
+        continue;
+      }
+
       const distToGate = Math.abs(this.pathDistance - obs.pathDistance);
       if (distToGate < pipeRadius + birdRadius) {
         // We are within longitudinal range of this gate

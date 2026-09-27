@@ -1628,40 +1628,53 @@ if (vBeachWave > 0.02) {
     const gapCenterY = flightPath.getColumnGapCenterY(distance, weights.mountain, gatePoint.x);
     const gapHeight = flightPath.columnGapHeight; // Generous clearance opening for 3D navigation
 
-    // Select biome-specific architectural voxel assets from registered biomes
-    const primaryBiome = weights.primaryBiome || biomeRegistry.getByChar('H') || biomeRegistry.getAll()[0];
-    const defaultGeo = this.bottomPillarGeos.values().next().value!;
-    const defaultTopGeo = this.topPillarGeos.values().next().value!;
-    const defaultBaseGeo = this.baseGeos.values().next().value!;
-
-    const bottomPillarGeo = this.bottomPillarGeos.get(primaryBiome) || defaultGeo;
-    const topPillarGeo = this.topPillarGeos.get(primaryBiome) || defaultTopGeo;
-    const baseGeo = this.baseGeos.get(primaryBiome) || defaultBaseGeo;
+    // Check flight path pitch angle at this column distance
+    const frame = flightPath.getFrame(distance, branch);
+    const pitchRad = Math.asin(THREE.MathUtils.clamp(frame.tangent.y, -1.0, 1.0));
+    const pitchDeg = Math.abs(pitchRad) * (180.0 / Math.PI);
+    // If the flight path pitch is greater than 30 degrees, omit placing the column as an obstacle
+    const hasColumn = pitchDeg <= 20.0;
 
     // Create obstacle group aligned with the path tangent
     const gateGroup = new THREE.Group();
 
-    // 1. Bottom Voxel Pillar: complete 24m column composed of standard 1x1x1 blocks
-    const bottomMesh = new THREE.Mesh(bottomPillarGeo, this.voxelPillarMat);
-    bottomMesh.position.y = gapCenterY - gapHeight / 2;
-    bottomMesh.castShadow = true;
-    bottomMesh.receiveShadow = true;
-    gateGroup.add(bottomMesh);
+    let bottomMesh: THREE.Mesh | undefined;
+    let baseMesh: THREE.Mesh | undefined;
+    let topMesh: THREE.Mesh | undefined;
 
-    // 2. Voxel Block Foundation surrounding the pillar base
-    const baseMesh = new THREE.Mesh(baseGeo, this.voxelBaseMat);
-    baseMesh.castShadow = true;
-    baseMesh.receiveShadow = true;
-    gateGroup.add(baseMesh);
+    if (hasColumn) {
+      // Select biome-specific architectural voxel assets from registered biomes
+      const primaryBiome = weights.primaryBiome || biomeRegistry.getByChar('H') || biomeRegistry.getAll()[0];
+      const defaultGeo = this.bottomPillarGeos.values().next().value!;
+      const defaultTopGeo = this.topPillarGeos.values().next().value!;
+      const defaultBaseGeo = this.baseGeos.values().next().value!;
 
-    // 3. Top Voxel Pillar: complete 24m column composed of standard 1x1x1 blocks
-    const topMesh = new THREE.Mesh(topPillarGeo, this.voxelPillarMat);
-    topMesh.position.y = gapCenterY + gapHeight / 2;
-    topMesh.castShadow = true;
-    topMesh.receiveShadow = true;
-    gateGroup.add(topMesh);
+      const bottomPillarGeo = this.bottomPillarGeos.get(primaryBiome) || defaultGeo;
+      const topPillarGeo = this.topPillarGeos.get(primaryBiome) || defaultTopGeo;
+      const baseGeo = this.baseGeos.get(primaryBiome) || defaultBaseGeo;
 
-    // 4. Floating Smooth Golden Doughnut Ring in center of gap
+      // 1. Bottom Voxel Pillar: complete 24m column composed of standard 1x1x1 blocks
+      bottomMesh = new THREE.Mesh(bottomPillarGeo, this.voxelPillarMat);
+      bottomMesh.position.y = gapCenterY - gapHeight / 2;
+      bottomMesh.castShadow = true;
+      bottomMesh.receiveShadow = true;
+      gateGroup.add(bottomMesh);
+
+      // 2. Voxel Block Foundation surrounding the pillar base
+      baseMesh = new THREE.Mesh(baseGeo, this.voxelBaseMat);
+      baseMesh.castShadow = true;
+      baseMesh.receiveShadow = true;
+      gateGroup.add(baseMesh);
+
+      // 3. Top Voxel Pillar: complete 24m column composed of standard 1x1x1 blocks
+      topMesh = new THREE.Mesh(topPillarGeo, this.voxelPillarMat);
+      topMesh.position.y = gapCenterY + gapHeight / 2;
+      topMesh.castShadow = true;
+      topMesh.receiveShadow = true;
+      gateGroup.add(topMesh);
+    }
+
+    // 4. Floating Smooth Golden Doughnut Ring in center of gap (always placed at the same location)
     const ring = new THREE.Mesh(this.ringGeo, this.ringMat);
     ring.position.y = gapCenterY;
     ring.castShadow = true;
@@ -1679,6 +1692,7 @@ if (vBeachWave > 0.02) {
       branch,
       lateralOffset: 0,
       tier,
+      hasColumn,
       topPipeMesh: topMesh,
       bottomPipeMesh: bottomMesh,
       ringMesh: ring,
@@ -1688,8 +1702,10 @@ if (vBeachWave > 0.02) {
 
     this.applyGateTransform(obstacle, distance, branch);
 
-    // Attach any prior crash feathers recorded on this pillar
-    this.featherManager.attachFeathersToObstacle(obstacle);
+    if (hasColumn) {
+      // Attach any prior crash feathers recorded on this pillar
+      this.featherManager.attachFeathersToObstacle(obstacle);
+    }
 
     (gateGroup as any)._obstacleData = obstacle;
     this.obstacles.push(obstacle);

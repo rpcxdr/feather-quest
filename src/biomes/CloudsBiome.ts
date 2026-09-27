@@ -24,14 +24,14 @@ export class CloudsBiome extends Biome {
   }
 
   /**
-   * Highest path elevation in the game, elevated at about 40.0m:
-   * Base corridor is 15.0m; adding an undulation base of +25.0m sets the center elevation to ~40.0m,
-   * comfortably higher than the mountain peaks below (which reach 28-32m).
+   * Highest path elevation in the game, elevated at about 55.0m:
+   * Base corridor is 15.0m; adding an undulation base of +40.0m sets the center elevation to ~55.0m,
+   * comfortably higher than the mountain peaks below (which reach 38-42m).
    * Altitude transitions into and out of clouds occur smoothly over two to three columns.
    */
   public getPathUndulation(z: number): number {
     const base =
-      25.0 +
+      40.0 +
       Math.sin(z * 0.01524) * 2.2 +
       Math.cos(z * 0.02781 + 1.2) * 1.5 +
       Math.sin(z * 0.00689 - 0.4) * 1.8;
@@ -40,7 +40,7 @@ export class CloudsBiome extends Biome {
 
   /**
    * Terrain below is rugged alpine mountains:
-   * Majestic peaks reach 28-32m, passing safely beneath the ~40m flight path
+   * Majestic peaks reach 38-42m, passing safely beneath the ~55m flight path
    * so the player looks down through the clouds to see the mountain summits below.
    */
   public getNaturalTerrainHeight(x: number, z: number): number {
@@ -51,7 +51,7 @@ export class CloudsBiome extends Biome {
     const p2 = peakFreq2 * Math.sqrt(Math.sqrt(peakFreq2));
     const p3 = peakFreq3 * peakFreq3;
     const hMountain =
-      5.0 +
+      15.0 +
       p1 * 14.0 +
       p2 * 8.0 +
       p3 * 4.0 +
@@ -74,25 +74,41 @@ export class CloudsBiome extends Biome {
   }
 
   public getVertexColor(ctx: TerrainVertexColorContext): [number, number, number] {
-    const h = ctx.h;
-    if (h > 54.0) {
-      // High-altitude snowy peaks catching brilliant sunlight above the cloud deck
-      const snowNoise = Math.sin(ctx.x * 0.45 + ctx.z * 0.35) * 0.04;
-      return [0.94 + snowNoise, 0.96 + snowNoise, 0.99];
+    const { h, x, z, blockNoise } = ctx;
+    const bNoise = blockNoise ?? 0;
+
+    // Organic snowline variation so the snow edge follows natural ridge contours
+    const snowJitter = Math.sin(x * 0.45 + z * 0.35) * 1.8 + Math.cos(x * 0.85 - z * 0.65) * 1.2;
+    const effectiveSnowH = h + snowJitter;
+
+    if (effectiveSnowH > 34.0) {
+      // High-altitude snowy peaks: brilliant white snow catching sunlight near mountain summits
+      const snowT = Math.min(1.0, (effectiveSnowH - 34.0) / 5.0);
+      const snowSparkle = Math.sin(x * 1.5 + z * 1.2) * 0.02;
+      return [
+        THREE.MathUtils.lerp(0.84, 0.96, snowT) + bNoise * 0.15 + snowSparkle,
+        THREE.MathUtils.lerp(0.87, 0.98, snowT) + bNoise * 0.15 + snowSparkle,
+        THREE.MathUtils.lerp(0.92, 1.00, snowT) + bNoise * 0.15 + snowSparkle,
+      ];
     }
-    if (h > 38.0) {
-      // Craggy snow patches mixed with dark exposed granite
-      const stoneNoise = Math.sin(ctx.x * 0.8 + ctx.z * 0.6) * 0.05;
-      return [0.62 + stoneNoise, 0.66 + stoneNoise, 0.72 + stoneNoise];
+    if (effectiveSnowH > 28.0) {
+      // Sub-peak snowline: craggy snow patches mixed with dark exposed granite rock
+      const patchNoise = Math.sin(x * 0.8 + z * 0.6) * 0.05;
+      const t = (effectiveSnowH - 28.0) / 6.0;
+      return [
+        THREE.MathUtils.lerp(0.50, 0.84, t) + patchNoise + bNoise * 0.2,
+        THREE.MathUtils.lerp(0.54, 0.87, t) + patchNoise + bNoise * 0.2,
+        THREE.MathUtils.lerp(0.60, 0.92, t) + patchNoise + bNoise * 0.2,
+      ];
     }
     if (h > 20.0) {
-      // Rugged alpine granite, slate, and basalt
-      const stoneNoise = Math.sin(ctx.x * 0.8 + ctx.z * 0.6) * 0.05;
-      return [0.42 + stoneNoise, 0.45 + stoneNoise, 0.48 + stoneNoise];
+      // Rugged alpine granite, slate, and basalt mid-slopes
+      const stoneNoise = Math.sin(x * 0.8 + z * 0.6) * 0.05;
+      return [0.42 + stoneNoise + bNoise * 0.2, 0.45 + stoneNoise + bNoise * 0.2, 0.48 + stoneNoise + bNoise * 0.2];
     }
     // Deep mountain passes and rock scree (no green trees or moss)
     const screeNoise = Math.sin(ctx.x * 0.6 + ctx.z * 0.7) * 0.04;
-    return [0.32 + screeNoise, 0.35 + screeNoise, 0.38 + screeNoise];
+    return [0.32 + screeNoise + bNoise * 0.2, 0.35 + screeNoise + bNoise * 0.2, 0.38 + screeNoise + bNoise * 0.2];
   }
 
   public getAtmosphereColors(): AtmosphereColors {

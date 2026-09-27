@@ -69,6 +69,7 @@ export interface ObstacleData {
   branch: 'SINGLE' | 'LEFT' | 'RIGHT';
   lateralOffset: number; // lateral offset in meters from base spine
   tier: number;         // 0 for cols 1-10, 1 for cols 11-20, etc.
+  hasColumn?: boolean;  // False if column pillar was omitted due to steep pitch (> 30 deg)
   topPipeMesh?: any;
   bottomPipeMesh?: any;
   ringMesh?: any;
