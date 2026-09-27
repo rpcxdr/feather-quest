@@ -84,16 +84,100 @@ body,
 @keyframes mapTileFadeIn {
   0% {
     opacity: 0;
-    transform: translateY(4px) scale(0.97);
   }
   100% {
     opacity: 1;
-    transform: translateY(0) scale(1);
   }
 }
 
 .animate-map-tile-fade {
-  animation: mapTileFadeIn 0.32s cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation: mapTileFadeIn 0.3s ease-out both;
+}
+
+@keyframes tileSelectBurst {
+  0% {
+    transform: translate(-50%, -50%) scale(0.9);
+    opacity: 0.9;
+  }
+  30% {
+    transform: translate(-50%, -50%) scale(1.1);
+    opacity: 1;
+  }
+  70% {
+    transform: translate(-50%, -50%) scale(1.2);
+    opacity: 1;
+  }
+  100% {
+    transform: translate(-50%, -50%) scale(1.35);
+    opacity: 0;
+  }
+}
+
+@keyframes tileRipple {
+  0% {
+    transform: scale(0.85);
+    opacity: 0.95;
+  }
+  100% {
+    transform: scale(2.4);
+    opacity: 0;
+  }
+}
+
+@keyframes playButtonExpand {
+  0% {
+    transform: scale(0.85);
+    opacity: 0.9;
+    filter: drop-shadow(0 0 8px rgba(251, 191, 36, 0.7));
+  }
+  25% {
+    transform: scale(1.35);
+    opacity: 1;
+    filter: drop-shadow(0 0 18px rgba(251, 191, 36, 0.95)) drop-shadow(0 0 32px rgba(245, 158, 11, 0.8));
+  }
+  60% {
+    transform: scale(2.0);
+    opacity: 1;
+    filter: drop-shadow(0 0 28px rgba(251, 191, 36, 1)) drop-shadow(0 0 45px rgba(245, 158, 11, 0.85));
+  }
+  100% {
+    transform: scale(2.8);
+    opacity: 0;
+    filter: drop-shadow(0 0 40px rgba(251, 191, 36, 0));
+  }
+}
+
+@keyframes playAuraExpand {
+  0% {
+    transform: scale(0.7);
+    opacity: 0.6;
+  }
+  50% {
+    transform: scale(2.2);
+    opacity: 0.9;
+  }
+  100% {
+    transform: scale(3.5);
+    opacity: 0;
+  }
+}
+
+.animate-tile-select-burst {
+  animation: tileSelectBurst 0.75s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.animate-tile-ripple {
+  animation: tileRipple 0.75s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.animate-play-button-expand {
+  animation: playButtonExpand 0.75s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  will-change: transform, opacity, filter;
+}
+
+.animate-play-aura-expand {
+  animation: playAuraExpand 0.75s ease-out forwards;
+  will-change: transform, opacity;
 }
 
 @keyframes goldenColorWave {

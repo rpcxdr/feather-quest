@@ -13,6 +13,7 @@ interface TerrainMapCanvasProps {
   totalLevels: number;
   levelUnitSize?: number;
   visibleRange?: VisibleLevelRange;
+  enteredStartTiles?: Set<string>;
 }
 
 interface TerrainLevelTileProps {
@@ -20,6 +21,7 @@ interface TerrainLevelTileProps {
   width: number;
   height: number;
   rowTop: number;
+  enteredStartTiles?: Set<string>;
 }
 
 // Module-level in-memory cache so each level's rendered terrain slice is computed at most ONCE
@@ -35,6 +37,7 @@ const TerrainLevelTile: React.FC<TerrainLevelTileProps> = ({
   width,
   height,
   rowTop,
+  enteredStartTiles,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
@@ -50,7 +53,13 @@ const TerrainLevelTile: React.FC<TerrainLevelTileProps> = ({
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    const cacheKey = `${level}_${w}_${h}`;
+    const enteredColKey = enteredStartTiles
+      ? Array.from(enteredStartTiles)
+          .filter((k: string) => k.startsWith(`${level}-`))
+          .sort()
+          .join(',')
+      : 'all';
+    const cacheKey = `${level}_${w}_${h}_${enteredColKey}`;
     const cached = tileCanvasCache.get(cacheKey);
     if (cached) {
       ctx.drawImage(cached, 0, 0, w, h);
@@ -161,6 +170,33 @@ const TerrainLevelTile: React.FC<TerrainLevelTileProps> = ({
         totalG = Math.max(0, Math.min(1, totalG * light));
         totalB = Math.max(0, Math.min(1, totalB * light));
 
+        // Exploration status check for this tile column:
+        // Level 0: center start square (normX in [0.415, 0.585]) is explored, sides are unexplored
+        // Level >= 1: checks if the start of this column square was entered
+        const col = Math.min(5, Math.floor(normX * 6));
+        const isEntered =
+          level === 0
+            ? normX >= 0.415 && normX <= 0.585
+            : enteredStartTiles
+            ? enteredStartTiles.has(`${level}-${col}`)
+            : true;
+
+        if (!isEntered) {
+          // Unexplored fog-of-war: dark atmospheric slate with faint topographic contour
+          totalR = totalR * 0.11 + 0.015;
+          totalG = totalG * 0.12 + 0.020;
+          totalB = totalB * 0.17 + 0.040;
+        }
+
+        // Subtle column seam divider
+        const colFract = (normX * 6) % 1;
+        const isColSeam = (colFract < 0.02 || colFract > 0.98) && gx > 0 && gx < gridW - 1;
+        if (isColSeam) {
+          totalR = totalR * 0.8 + 0.03;
+          totalG = totalG * 0.8 + 0.04;
+          totalB = totalB * 0.8 + 0.06;
+        }
+
         const pixelIdx = (gy * gridW + gx) * 4;
         data[pixelIdx] = Math.round(totalR * 255);
         data[pixelIdx + 1] = Math.round(totalG * 255);
@@ -197,7 +233,7 @@ const TerrainLevelTile: React.FC<TerrainLevelTileProps> = ({
       tileCanvasCache.set(cacheKey, cachedCanvas);
       ctx.drawImage(cachedCanvas, 0, 0, w, h);
     }
-  }, [level, width, height]);
+  }, [level, width, height, enteredStartTiles]);
 
   return (
     <div
@@ -229,6 +265,7 @@ export const TerrainMapCanvas: React.FC<TerrainMapCanvasProps> = ({
   totalLevels,
   levelUnitSize,
   visibleRange,
+  enteredStartTiles,
 }) => {
   const effectiveUnitSize = levelUnitSize ?? (totalLevels > 0 ? height / totalLevels : 60);
 
@@ -265,6 +302,7 @@ export const TerrainMapCanvas: React.FC<TerrainMapCanvasProps> = ({
             width={width}
             height={effectiveUnitSize}
             rowTop={rowTop}
+            enteredStartTiles={enteredStartTiles}
           />
         );
       })}

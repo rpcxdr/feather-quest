@@ -4,6 +4,7 @@ import { X, Compass, Trophy, Layers, Play } from 'lucide-react';
 import { flightPath, LEVEL_LENGTH, LATERAL_OFFSET } from '../game/pathGenerator';
 import { flightPathHistory, RecordedFlightPath, getEnteredStartTiles } from '../game/flightPathHistory';
 import { TerrainMapCanvas } from './TerrainMapCanvas';
+import { TilePlayIndicator, ClickedTilePosition } from './TilePlayIndicator';
 
 interface MapModalProps {
   isOpen: boolean;
@@ -12,7 +13,7 @@ interface MapModalProps {
   currentDistance?: number;
   currentStartLevel?: number;
   currentStartCol?: number;
-  onSelectStartLevel?: (level: number, col: number) => void;
+  onSelectStartLevel?: (level: number, col: number, clickPos?: ClickedTilePosition) => void;
 }
 
 // Visually distinct aesthetic color palette for flight paths
@@ -69,9 +70,12 @@ export const MapModal: React.FC<MapModalProps> = ({
     return () => observer.disconnect();
   }, [isOpen]);
 
-  // Saved flights from history (always genuine recorded flights in chronological order)
+  // Saved flights from history (filtered to only flights that passed at least 1 column)
   const allDisplayFlights = useMemo(() => {
-    return flightPathHistory.getAllFlightPaths();
+    return flightPathHistory.getAllFlightPaths().filter((f) => {
+      const cols = typeof f.score === 'number' ? f.score : Math.max(0, Math.floor(f.distance / 25));
+      return cols >= 1;
+    });
   }, [historyVersion]);
 
   // (1) By default, highlight your most recent flight when opening or when flights change
@@ -82,12 +86,14 @@ export const MapModal: React.FC<MapModalProps> = ({
     }
   }, [isOpen, historyVersion, allDisplayFlights.length]);
 
-  // Best flight (highest distance)
+  // Best flight (highest columns passed)
   const bestFlightId = useMemo(() => {
     if (allDisplayFlights.length === 0) return null;
     let best = allDisplayFlights[0];
     for (const f of allDisplayFlights) {
-      if (f.distance > best.distance) {
+      const bestCols = typeof best.score === 'number' ? best.score : Math.max(0, Math.floor(best.distance / 25));
+      const fCols = typeof f.score === 'number' ? f.score : Math.max(0, Math.floor(f.distance / 25));
+      if (fCols > bestCols || (fCols === bestCols && f.distance > best.distance)) {
         best = f;
       }
     }
@@ -238,13 +244,27 @@ export const MapModal: React.FC<MapModalProps> = ({
   }, [allDisplayFlights]);
 
   // Handle clicking a square in the grid
-  const handleSelectSquare = (lvl: number, col: number) => {
+  const handleSelectSquare = (
+    lvl: number,
+    col: number,
+    e?: React.MouseEvent<HTMLButtonElement>
+  ) => {
     const tileKey = `${lvl}-${col}`;
     if (!enteredStartTiles.has(tileKey)) {
       return;
     }
+    let clickPos: ClickedTilePosition | undefined;
+    if (e) {
+      const rect = e.currentTarget.getBoundingClientRect();
+      clickPos = {
+        x: rect.left + rect.width / 2,
+        y: rect.top + rect.height / 2,
+        width: rect.width,
+        height: rect.height,
+      };
+    }
     if (onSelectStartLevel) {
-      onSelectStartLevel(lvl, col);
+      onSelectStartLevel(lvl, col, clickPos);
     }
     onClose();
   };
@@ -456,6 +476,7 @@ export const MapModal: React.FC<MapModalProps> = ({
               const isSelected = selectedFlightId === f.id;
               const isBest = f.id === bestFlightId;
               const color = FLIGHT_COLORS[idx % FLIGHT_COLORS.length];
+              const columns = typeof f.score === 'number' ? f.score : Math.max(0, Math.floor(f.distance / 25));
 
               return (
                 <button
@@ -464,22 +485,30 @@ export const MapModal: React.FC<MapModalProps> = ({
                   onClick={() => handleFlightClick(f)}
                   onMouseEnter={() => setHoveredFlightId(f.id)}
                   onMouseLeave={() => setHoveredFlightId(null)}
-                  className={`px-2.5 py-1 rounded-full text-xs font-medium transition-all shrink-0 flex items-center gap-1.5 cursor-pointer border ${
+                  title={`${columns} column${columns === 1 ? '' : 's'}`}
+                  style={{
+                    borderColor: color.stroke,
+                    backgroundColor: isSelected ? color.stroke : 'rgba(15, 23, 42, 0.85)',
+                    color: isSelected ? '#020617' : '#ffffff',
+                    boxShadow: isSelected
+                      ? `0 0 14px ${color.stroke}88, inset 0 1px 1px rgba(255,255,255,0.4)`
+                      : undefined,
+                  }}
+                  className={`px-3 py-1 rounded-full text-xs font-bold transition-all shrink-0 flex items-center justify-center gap-1 cursor-pointer border-2 ${
                     isSelected
-                      ? 'bg-slate-800 text-white border-amber-400 shadow-md ring-1 ring-amber-400/50'
-                      : 'bg-slate-900/80 text-slate-400 border-white/10 hover:border-white/25 hover:text-slate-200'
+                      ? 'scale-105'
+                      : 'hover:bg-slate-800/90 active:scale-95'
                   }`}
                 >
-                  <span
-                    className="w-2 h-2 rounded-full shrink-0"
-                    style={{ backgroundColor: color.stroke }}
-                  />
-                  <span>Flight #{f.flightNumber}</span>
-                  <span className="font-mono text-[11px] text-slate-500">
-                    {f.distance}m
+                  <span className="font-mono text-[11px] font-black">
+                    {columns}
                   </span>
                   {isBest && (
-                    <Trophy className="w-3 h-3 text-amber-400 inline shrink-0" />
+                    <Trophy
+                      className={`w-3 h-3 inline shrink-0 ${
+                        isSelected ? 'text-slate-950 fill-slate-950/20' : 'text-amber-400'
+                      }`}
+                    />
                   )}
                 </button>
               );
@@ -508,6 +537,7 @@ export const MapModal: React.FC<MapModalProps> = ({
                 totalLevels={totalLevelsCount}
                 levelUnitSize={levelUnitSize}
                 visibleRange={visibleRange}
+                enteredStartTiles={enteredStartTiles}
               />
             </div>
 
@@ -539,18 +569,18 @@ export const MapModal: React.FC<MapModalProps> = ({
                         key="cell-0-start"
                         id="grid-cell-0-start"
                         type="button"
-                        onClick={() => handleSelectSquare(0, 2)}
+                        onClick={(e) => handleSelectSquare(0, 2, e)}
                         style={{
                           left: `${2.5 * levelUnitSize}px`,
                           width: `${levelUnitSize}px`,
                           height: `${levelUnitSize}px`,
                         }}
-                        className={`absolute group transition-all duration-150 flex items-center justify-center p-1 select-none overflow-hidden animate-map-tile-fade ${
+                        className={`absolute group transition-all duration-150 flex items-center justify-center p-1 select-none overflow-hidden ${
                           isStartSelected
                             ? 'bg-amber-500/35 border-2 border-amber-400 ring-2 ring-inset ring-amber-400/90 shadow-[0_0_15px_rgba(251,191,36,0.35)] z-20 cursor-pointer'
-                            : 'hover:bg-amber-400/20 active:bg-amber-500/30 backdrop-blur-[0.5px] cursor-pointer hover:z-20'
+                            : 'hover:bg-amber-400/20 active:bg-amber-500/30 backdrop-blur-[0.5px] cursor-pointer hover:z-20 border border-white/10 hover:border-amber-400/40'
                         }`}
-                        title="Click to fly from Level 0 (0m)"
+                        title="Click to fly from Level 0 (0 columns)"
                       >
                         {/* Center status badge */}
                         {isStartSelected ? (
@@ -561,9 +591,7 @@ export const MapModal: React.FC<MapModalProps> = ({
                             </span>
                           </div>
                         ) : (
-                          <div className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center scale-90 group-hover:scale-100 duration-150 drop-shadow-[0_2px_10px_rgba(0,0,0,0.95)] z-20">
-                            <Play className="w-8 h-8 text-amber-300 fill-amber-300" />
-                          </div>
+                          <TilePlayIndicator isHoverOnly />
                         )}
                       </button>
                     </div>
@@ -593,16 +621,13 @@ export const MapModal: React.FC<MapModalProps> = ({
                             id={`grid-cell-${lvl}-${col}`}
                             type="button"
                             disabled={!isEntered}
-                            onClick={() => handleSelectSquare(lvl, col)}
-                            style={{
-                              animationDelay: `${col * 28}ms`,
-                            }}
-                            className={`relative group transition-all duration-150 flex items-center justify-center p-1 select-none overflow-hidden animate-map-tile-fade ${
+                            onClick={(e) => handleSelectSquare(lvl, col, e)}
+                            className={`relative group transition-all duration-150 flex items-center justify-center p-1 select-none overflow-hidden ${
                               isStartSelected
                                 ? 'bg-amber-500/35 border-2 border-amber-400 ring-2 ring-inset ring-amber-400/90 shadow-[0_0_15px_rgba(251,191,36,0.35)] z-20 cursor-pointer'
                                 : isEntered
-                                ? 'hover:bg-amber-400/20 active:bg-amber-500/30 backdrop-blur-[0.5px] cursor-pointer hover:z-20'
-                                : 'opacity-40 bg-slate-950/70 cursor-default'
+                                ? 'hover:bg-amber-400/20 active:bg-amber-500/30 backdrop-blur-[0.5px] cursor-pointer hover:z-20 border border-white/10 hover:border-amber-400/40'
+                                : 'cursor-default border border-white/5'
                             }`}
                             title={
                               isEntered
@@ -619,9 +644,7 @@ export const MapModal: React.FC<MapModalProps> = ({
                                 </span>
                               </div>
                             ) : isEntered ? (
-                              <div className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center scale-90 group-hover:scale-100 duration-150 drop-shadow-[0_2px_10px_rgba(0,0,0,0.95)] z-20">
-                                <Play className="w-8 h-8 text-amber-300 fill-amber-300" />
-                              </div>
+                              <TilePlayIndicator isHoverOnly />
                             ) : null}
                           </button>
                         );
@@ -753,32 +776,41 @@ export const MapModal: React.FC<MapModalProps> = ({
                       opacity={isDimmed ? 0.3 : 1.0}
                     />
 
-                    {/* Flight Number Badge if selected or hovered */}
-                    {(isSelected || isHovered) && (
-                      <g transform={`translate(${endPoint.x + 8}, ${endPoint.y - 8})`}>
-                        <rect
-                          x="0"
-                          y="-12"
-                          width="72"
-                          height="18"
-                          rx="4"
-                          fill="#090d16"
-                          stroke={color.stroke}
-                          strokeWidth="1"
-                          fillOpacity="0.95"
-                        />
-                        <text
-                          x="6"
-                          y="1"
-                          fill="#ffffff"
-                          fontSize="10"
-                          fontWeight="bold"
-                          fontFamily="monospace"
-                        >
-                          #{flight.flightNumber} {flight.distance}m
-                        </text>
-                      </g>
-                    )}
+                    {/* Flight Columns Badge if selected or hovered */}
+                    {(isSelected || isHovered) && (() => {
+                      const columns = typeof flight.score === 'number'
+                        ? flight.score
+                        : Math.max(0, Math.floor(flight.distance / 25));
+                      const colStr = String(columns);
+                      const badgeWidth = Math.max(26, colStr.length * 8 + 14);
+
+                      return (
+                        <g transform={`translate(${endPoint.x + 8}, ${endPoint.y - 8})`}>
+                          <rect
+                            x="0"
+                            y="-12"
+                            width={badgeWidth}
+                            height="18"
+                            rx="4"
+                            fill="#090d16"
+                            stroke={color.stroke}
+                            strokeWidth="1.2"
+                            fillOpacity="0.95"
+                          />
+                          <text
+                            x={badgeWidth / 2}
+                            y="1"
+                            textAnchor="middle"
+                            fill="#ffffff"
+                            fontSize="10"
+                            fontWeight="bold"
+                            fontFamily="monospace"
+                          >
+                            {columns}
+                          </text>
+                        </g>
+                      );
+                    })()}
                   </g>
                 );
               })}

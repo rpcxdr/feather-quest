@@ -109,6 +109,109 @@ export class FlightPathGenerator {
   public customStartX: number = 0;
   public customStartCol: number = 2;
 
+  // --- Local Caching for Biome Weight Lookups ---
+  private tileBiomeCache = new Map<string, Biome>();
+  private pureBiomeWeightsCache = new Map<Biome, BiomeWeights>();
+  private biomeWeightsCache = new Map<string, BiomeWeights>();
+  private static readonly MAX_BIOME_CACHE_SIZE = 16384;
+
+  public clearBiomeWeightsCache(): void {
+    this.biomeWeightsCache.clear();
+    this.tileBiomeCache.clear();
+    this.pureBiomeWeightsCache.clear();
+  }
+
+  private getTileBiome(r: number, c: number, mX: number, mZ: number, tileSize: number): Biome {
+    const key = `${r},${c}`;
+    const cached = this.tileBiomeCache.get(key);
+    if (cached) return cached;
+
+    const sampleX = (mX / 2 - (c + 0.5)) * tileSize;
+    const sampleZ = (mZ - (r + 0.5)) * tileSize;
+    const char = getBiomeFromMap(sampleX, sampleZ);
+    const registered = biomeRegistry.getByChar(char);
+    const biome = registered || biomeRegistry.getDefault();
+    this.tileBiomeCache.set(key, biome);
+    return biome;
+  }
+
+  private getPureBiomeWeights(biome: Biome): BiomeWeights {
+    const cached = this.pureBiomeWeightsCache.get(biome);
+    if (cached) return cached;
+
+    const bH = biomeRegistry.getByChar('H');
+    const bh = biomeRegistry.getByChar('h');
+    const bM = biomeRegistry.getByChar('M');
+    const bm = biomeRegistry.getByChar('m');
+    const bC = biomeRegistry.getByChar('C');
+    const bc = biomeRegistry.getByChar('c');
+    const bs = biomeRegistry.getByChar('s');
+    const bW = biomeRegistry.getByChar('W');
+    const bw = biomeRegistry.getByChar('w');
+
+    const hills = biome === bH ? 1.0 : 0;
+    const hillsLow = biome === bh ? 1.0 : 0;
+    const mountain = biome === bM ? 1.0 : 0;
+    const mountainLow = biome === bm ? 1.0 : 0;
+    const canyon = biome === bC ? 1.0 : 0;
+    const canyonLow = biome === bc ? 1.0 : 0;
+    const clouds = biome === bs ? 1.0 : 0;
+    const waterDeep = biome === bW ? 1.0 : 0;
+    const waterShallow = biome === bw ? 1.0 : 0;
+
+    let primary: TerrainType = 'ROLLING_HILLS';
+    if (biome === bs) {
+      primary = 'HIGH_CLOUDS';
+    } else if (biome === bW) {
+      primary = 'DEEP_WATERS';
+    } else if (biome === bw) {
+      primary = 'SHALLOW_WATERS';
+    } else if (biome === bM || biome === bm) {
+      primary = 'RUGGED_MOUNTAIN';
+    } else if (biome === bC || biome === bc) {
+      primary = 'DEEP_CANYON_SLOTS';
+    } else {
+      primary = 'ROLLING_HILLS';
+    }
+
+    const biomeWeightsMap = new Map<Biome, number>();
+    const allBiomes = biomeRegistry.getAll();
+    for (let i = 0; i < allBiomes.length; i++) {
+      const b = allBiomes[i];
+      biomeWeightsMap.set(b, b === biome ? 1.0 : 0);
+    }
+
+    const weights: BiomeWeights = {
+      hills,
+      hillsLow,
+      mountain,
+      mountainLow,
+      canyon,
+      canyonLow,
+      waterDeep,
+      waterShallow,
+      clouds,
+      primary,
+      primaryBiome: biome,
+      biomeWeights: biomeWeightsMap,
+    };
+
+    this.pureBiomeWeightsCache.set(biome, weights);
+    return weights;
+  }
+
+  private storeInBiomeWeightsCache(key: string, weights: BiomeWeights): void {
+    if (this.biomeWeightsCache.size >= FlightPathGenerator.MAX_BIOME_CACHE_SIZE) {
+      // Prune oldest quarter of entries to keep cache performant without frequent clears
+      let toRemove = Math.floor(FlightPathGenerator.MAX_BIOME_CACHE_SIZE / 4);
+      for (const k of this.biomeWeightsCache.keys()) {
+        this.biomeWeightsCache.delete(k);
+        if (--toRemove <= 0) break;
+      }
+    }
+    this.biomeWeightsCache.set(key, weights);
+  }
+
   public setStartLevel(level: number, startX: number, startCol: number = 2) {
     if (level <= 0) {
       this.customStartLevel = 0;
@@ -241,7 +344,17 @@ export class FlightPathGenerator {
   }
 
   // Calculate smooth biome blend weights at coordinates (x, z) using 2D smoothstep interpolation between tiles
+  // with multi-level local caching for high performance during chunk generation and level loading.
   public getBiomeWeights(x: number, z: number): BiomeWeights {
+    // 1. Check coordinate-level local cache (using centimeter-precision key)
+    const qx = Math.round(x * 100) / 100 + 0;
+    const qz = Math.round(z * 100) / 100 + 0;
+    const cacheKey = `${qx},${qz}`;
+    const cached = this.biomeWeightsCache.get(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
     const mZ = terrainMap.length;
     const mX = terrainMap[0]?.length ?? 16;
     const tileSize = TILE_SIZE; // 25.0m
@@ -261,6 +374,19 @@ export class FlightPathGenerator {
     const r0 = Math.floor(v);
     const r1 = r0 + 1;
 
+    // Sample the 4 bounding tiles with local tile cache
+    const b00 = this.getTileBiome(r0, c0, mX, mZ, tileSize);
+    const b10 = this.getTileBiome(r0, c1, mX, mZ, tileSize);
+    const b01 = this.getTileBiome(r1, c0, mX, mZ, tileSize);
+    const b11 = this.getTileBiome(r1, c1, mX, mZ, tileSize);
+
+    // Fast-path: if all 4 bounding tiles have identical biome, weights strictly equal 1.0 for that biome
+    if (b00 === b10 && b00 === b01 && b00 === b11) {
+      const pureWeights = this.getPureBiomeWeights(b00);
+      this.storeInBiomeWeightsCache(cacheKey, pureWeights);
+      return pureWeights;
+    }
+
     // Fractional offset within cell [0, 1)
     const fx = u - c0;
     const fz = v - r0;
@@ -276,24 +402,9 @@ export class FlightPathGenerator {
     const w11 = sx * sz;
 
     const allBiomes = biomeRegistry.getAll();
-    const tileSample = (r: number, c: number): Biome => {
-      // Calculate world coordinate corresponding to this grid cell center
-      // mapXCoord = mX / 2 - sampleX / tileSize => sampleX = (mX / 2 - (c + 0.5)) * tileSize
-      // mapZCoord = mZ - sampleZ / tileSize => sampleZ = (mZ - (r + 0.5)) * tileSize
-      const sampleX = (mX / 2 - (c + 0.5)) * tileSize;
-      const sampleZ = (mZ - (r + 0.5)) * tileSize;
-      const char = getBiomeFromMap(sampleX, sampleZ);
-      const registered = biomeRegistry.getByChar(char);
-      return registered || biomeRegistry.getDefault();
-    };
-
-    const b00 = tileSample(r0, c0);
-    const b10 = tileSample(r0, c1);
-    const b01 = tileSample(r1, c0);
-    const b11 = tileSample(r1, c1);
-
     const biomeWeightsMap = new Map<Biome, number>();
-    for (const b of allBiomes) {
+    for (let i = 0; i < allBiomes.length; i++) {
+      const b = allBiomes[i];
       let weight = 0;
       if (b00 === b) weight += w00;
       if (b10 === b) weight += w10;
@@ -302,15 +413,25 @@ export class FlightPathGenerator {
       biomeWeightsMap.set(b, weight);
     }
 
-    const hills = biomeWeightsMap.get(biomeRegistry.getByChar('H')!) || 0;
-    const hillsLow = biomeWeightsMap.get(biomeRegistry.getByChar('h')!) || 0;
-    const mountain = biomeWeightsMap.get(biomeRegistry.getByChar('M')!) || 0;
-    const mountainLow = biomeWeightsMap.get(biomeRegistry.getByChar('m')!) || 0;
-    const canyon = biomeWeightsMap.get(biomeRegistry.getByChar('C')!) || 0;
-    const canyonLow = biomeWeightsMap.get(biomeRegistry.getByChar('c')!) || 0;
-    const clouds = biomeWeightsMap.get(biomeRegistry.getByChar('s')!) || 0;
-    const waterDeep = biomeWeightsMap.get(biomeRegistry.getByChar('W')!) || 0;
-    const waterShallow = biomeWeightsMap.get(biomeRegistry.getByChar('w')!) || 0;
+    const bH = biomeRegistry.getByChar('H');
+    const bh = biomeRegistry.getByChar('h');
+    const bM = biomeRegistry.getByChar('M');
+    const bm = biomeRegistry.getByChar('m');
+    const bC = biomeRegistry.getByChar('C');
+    const bc = biomeRegistry.getByChar('c');
+    const bs = biomeRegistry.getByChar('s');
+    const bW = biomeRegistry.getByChar('W');
+    const bw = biomeRegistry.getByChar('w');
+
+    const hills = (bH ? biomeWeightsMap.get(bH) : 0) || 0;
+    const hillsLow = (bh ? biomeWeightsMap.get(bh) : 0) || 0;
+    const mountain = (bM ? biomeWeightsMap.get(bM) : 0) || 0;
+    const mountainLow = (bm ? biomeWeightsMap.get(bm) : 0) || 0;
+    const canyon = (bC ? biomeWeightsMap.get(bC) : 0) || 0;
+    const canyonLow = (bc ? biomeWeightsMap.get(bc) : 0) || 0;
+    const clouds = (bs ? biomeWeightsMap.get(bs) : 0) || 0;
+    const waterDeep = (bW ? biomeWeightsMap.get(bW) : 0) || 0;
+    const waterShallow = (bw ? biomeWeightsMap.get(bw) : 0) || 0;
 
     const totalHills = hills + hillsLow;
     const totalMountain = mountain + mountainLow;
@@ -319,33 +440,33 @@ export class FlightPathGenerator {
     const totalClouds = clouds;
 
     let primary: TerrainType = 'ROLLING_HILLS';
-    let primaryBiome: Biome = biomeRegistry.getByChar('H') || biomeRegistry.getDefault();
+    let primaryBiome: Biome = bH || biomeRegistry.getDefault();
 
     const maxWeight = Math.max(totalHills, totalMountain, totalCanyon, totalWater, totalClouds);
 
-    if (maxWeight === totalClouds && totalClouds > 0.001) {
+    if (maxWeight === totalClouds && totalClouds > 0.001 && bs) {
       primary = 'HIGH_CLOUDS';
-      primaryBiome = biomeRegistry.getByChar('s')!;
+      primaryBiome = bs;
     } else if (maxWeight === totalWater && totalWater > 0.001) {
-      if (waterDeep >= waterShallow) {
+      if (waterDeep >= waterShallow && bW) {
         primary = 'DEEP_WATERS';
-        primaryBiome = biomeRegistry.getByChar('W')!;
-      } else {
+        primaryBiome = bW;
+      } else if (bw) {
         primary = 'SHALLOW_WATERS';
-        primaryBiome = biomeRegistry.getByChar('w')!;
+        primaryBiome = bw;
       }
     } else if (maxWeight === totalMountain) {
       primary = 'RUGGED_MOUNTAIN';
-      primaryBiome = mountain >= mountainLow ? biomeRegistry.getByChar('M')! : biomeRegistry.getByChar('m')!;
+      primaryBiome = mountain >= mountainLow ? (bM || bm!) : (bm || bM!);
     } else if (maxWeight === totalCanyon) {
       primary = 'DEEP_CANYON_SLOTS';
-      primaryBiome = canyon >= canyonLow ? biomeRegistry.getByChar('C')! : biomeRegistry.getByChar('c')!;
+      primaryBiome = canyon >= canyonLow ? (bC || bc!) : (bc || bC!);
     } else {
       primary = 'ROLLING_HILLS';
-      primaryBiome = hills >= hillsLow ? biomeRegistry.getByChar('H')! : biomeRegistry.getByChar('h')!;
+      primaryBiome = hills >= hillsLow ? (bH || bh!) : (bh || bH!);
     }
 
-    return {
+    const computedWeights: BiomeWeights = {
       hills,
       hillsLow,
       mountain,
@@ -359,6 +480,9 @@ export class FlightPathGenerator {
       primaryBiome,
       biomeWeights: biomeWeightsMap,
     };
+
+    this.storeInBiomeWeightsCache(cacheKey, computedWeights);
+    return computedWeights;
   }
 
   /**

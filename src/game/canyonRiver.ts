@@ -89,8 +89,8 @@ export class CanyonRiverManager {
       this.group.add(chunkGroup);
 
       // Pre-allocate dynamic river water buffer geometry
-      const maxVertices = 400;
-      const maxIndices = 1200;
+      const maxVertices = 600;
+      const maxIndices = 1800;
       const geo = new THREE.BufferGeometry();
       const posArray = new Float32Array(maxVertices * 3);
       const uvArray = new Float32Array(maxVertices * 2);
@@ -309,6 +309,20 @@ export class CanyonRiverManager {
     return texture;
   }
 
+  /**
+   * Evaluates if world point (x, z) is in canyon terrain.
+   * River ribbons and whitewater rapids boulders are strictly confined to canyon terrain.
+   */
+  private isCanyonTerrainAt(x: number, z: number): boolean {
+    const weights = flightPath.getBiomeWeights(x, z);
+    const totalCanyon = (weights.canyon || 0) + (weights.canyonLow || 0);
+    const isCanyonBiome =
+      weights.primary === 'DEEP_CANYON_SLOTS' ||
+      weights.primaryBiome?.category === 'CANYON' ||
+      (weights.primaryBiome ? weights.primaryBiome.hasRiver() : false);
+    return isCanyonBiome && totalCanyon >= 0.35;
+  }
+
   // Populate/refresh a river chunk matching the terrain chunk's world span
   public populateRiverChunk(chunkIndex: number, centerZ: number, chunkLength: number) {
     const chunk = this.riverChunks[chunkIndex];
@@ -318,46 +332,17 @@ export class CanyonRiverManager {
     const startZ = centerZ - chunkLength / 2;
     const endZ = centerZ + chunkLength / 2;
 
-    // Check if any river-bearing biome is present anywhere in this chunk
-    // Sample across active branches at start, mid, and end
-    const startBranches = flightPath.getActiveBranchesAt(startZ);
-    const midBranches = flightPath.getActiveBranchesAt(centerZ);
-    const endBranches = flightPath.getActiveBranchesAt(startZ + chunkLength);
-
-    const getRiverWeight = (w: ReturnType<typeof flightPath.getBiomeWeights>) => {
-      if (w.biomeWeights) {
-        let sum = 0;
-        for (const [biome, weight] of w.biomeWeights.entries()) {
-          if (biome.hasRiver()) sum += weight;
-        }
-        return sum;
-      }
-      return (w.canyon || 0) + (w.canyonLow || 0);
-    };
-
-    let maxCanyonWeight = 0;
-    for (const br of startBranches) {
-      maxCanyonWeight = Math.max(maxCanyonWeight, getRiverWeight(flightPath.getBiomeWeights(br.point.x, startZ)));
-    }
-    for (const br of midBranches) {
-      maxCanyonWeight = Math.max(maxCanyonWeight, getRiverWeight(flightPath.getBiomeWeights(br.point.x, centerZ)));
-    }
-    for (const br of endBranches) {
-      maxCanyonWeight = Math.max(maxCanyonWeight, getRiverWeight(flightPath.getBiomeWeights(br.point.x, endZ)));
-    }
-
-    if (maxCanyonWeight < 0.001) {
-      chunk.group.visible = false;
-      return;
-    }
-
-    chunk.group.visible = true;
-
     // Clear existing rapids boulders & foam rings
     while (chunk.bouldersGroup.children.length > 0) {
       chunk.bouldersGroup.remove(chunk.bouldersGroup.children[0]);
     }
     chunk.foamCollars = [];
+
+    const startBranches = flightPath.getActiveBranchesAt(startZ);
+    const midBranches = flightPath.getActiveBranchesAt(centerZ);
+    const endBranches = flightPath.getActiveBranchesAt(endZ);
+
+    const numBranchesToBuild = Math.max(startBranches.length, midBranches.length, endBranches.length);
 
     // Construct river ribbons along active branch paths
     const numZSteps = 24; // Samples along the 60m chunk (~2.5m per step)
@@ -369,16 +354,44 @@ export class CanyonRiverManager {
     const indices: number[] = [];
     let vertexOffset = 0;
 
-    const numBranchesToBuild = (startBranches.length > 1 || midBranches.length > 1 || endBranches.length > 1) ? 2 : midBranches.length;
-
     for (let b = 0; b < numBranchesToBuild; b++) {
-      const branchStartVertex = vertexOffset;
+      const stepInCanyon: boolean[] = [];
+      const stepBranch: (typeof startBranches[0] | null)[] = [];
+      const stepZ: number[] = [];
 
       for (let zi = 0; zi <= numZSteps; zi++) {
         const t = zi / numZSteps;
         const currentZ = startZ + t * chunkLength;
         const branches = flightPath.getActiveBranchesAt(currentZ);
-        const activeBranch = branches[Math.min(b, branches.length - 1)];
+        if (b >= branches.length) {
+          stepInCanyon.push(false);
+          stepBranch.push(null);
+          stepZ.push(currentZ);
+          continue;
+        }
+
+        const activeBranch = branches[b];
+        const inCanyon = this.isCanyonTerrainAt(activeBranch.point.x, currentZ);
+        stepInCanyon.push(inCanyon);
+        stepBranch.push(activeBranch);
+        stepZ.push(currentZ);
+      }
+
+      const stepVertexStart: number[] = [];
+
+      for (let zi = 0; zi <= numZSteps; zi++) {
+        const isStepUsed =
+          (zi > 0 && stepInCanyon[zi - 1] && stepInCanyon[zi]) ||
+          (zi < numZSteps && stepInCanyon[zi] && stepInCanyon[zi + 1]);
+
+        if (!isStepUsed) {
+          stepVertexStart.push(-1);
+          continue;
+        }
+
+        stepVertexStart.push(vertexOffset);
+        const activeBranch = stepBranch[zi]!;
+        const currentZ = stepZ[zi];
         const weights = flightPath.getBiomeWeights(activeBranch.point.x, currentZ);
 
         // Compute blended water height across river biomes
@@ -398,10 +411,7 @@ export class CanyonRiverManager {
           weightedWaterY = activeBranch.point.y - 21.8;
         }
 
-        const canyonBlend = Math.min(1, totalRiverWeight || ((weights.canyon || 0) + (weights.canyonLow || 0)));
-
-        // Submerge river cleanly if outside/transitioning into canyon
-        const waterY = weightedWaterY - (1.0 - canyonBlend) * 16.0;
+        const waterY = weightedWaterY;
 
         for (let wi = 0; wi <= numWSteps; wi++) {
           const wRatio = wi / numWSteps; // 0 to 1
@@ -417,85 +427,100 @@ export class CanyonRiverManager {
           vertexOffset++;
         }
 
-        // Add 3D Rapids Boulders and Whitewater Foam in the rapid zones
-        // Rapids occur cyclically every 28m in the canyon
-        if (canyonBlend > 0.4) {
-          const cycleDist = ((currentZ % 28.0) + 28.0) % 28.0;
-          if (zi % 4 === 0 && cycleDist > 8.0 && cycleDist < 19.0) {
-            // Rapid zone boulder
-            const rockOffsetX = ((Math.sin(currentZ * 1.3 + b) * 0.55) + (b === 0 ? -0.3 : 0.3)) * 1.3;
-            const rockX = activeBranch.point.x + rockOffsetX;
-            const rockZ = currentZ;
+        // Add 3D Rapids Boulders and Whitewater Foam strictly in canyon rapid zones
+        const cycleDist = ((currentZ % 28.0) + 28.0) % 28.0;
+        if (zi % 4 === 0 && cycleDist > 8.0 && cycleDist < 19.0) {
+          // Rapid zone boulder
+          const rockOffsetX = ((Math.sin(currentZ * 1.3 + b) * 0.55) + (b === 0 ? -0.3 : 0.3)) * 1.3;
+          const rockX = activeBranch.point.x + rockOffsetX;
+          const rockZ = currentZ;
 
-            // Pick geometry and material deterministically based on location
-            const rockSeed = Math.abs(Math.sin(currentZ * 12.9898 + b * 78.233));
-            const geoIndex = Math.floor(rockSeed * this.boulderGeos.length) % this.boulderGeos.length;
-            const matIndex = Math.floor(rockSeed * 3.7) % this.boulderMaterials.length;
+          // Pick geometry and material deterministically based on location
+          const rockSeed = Math.abs(Math.sin(currentZ * 12.9898 + b * 78.233));
+          const geoIndex = Math.floor(rockSeed * this.boulderGeos.length) % this.boulderGeos.length;
+          const matIndex = Math.floor(rockSeed * 3.7) % this.boulderMaterials.length;
 
-            const chosenGeo = this.boulderGeos[geoIndex];
-            const chosenMat = this.boulderMaterials[matIndex];
+          const chosenGeo = this.boulderGeos[geoIndex];
+          const chosenMat = this.boulderMaterials[matIndex];
 
-            // Boulder mesh
-            const rock = new THREE.Mesh(chosenGeo, chosenMat);
-            const scaleX = 0.75 + Math.abs(Math.sin(currentZ * 0.9)) * 0.45;
-            const scaleY = 0.55 + Math.abs(Math.cos(currentZ * 0.7)) * 0.35;
-            const scaleZ = 0.75 + Math.abs(Math.sin(currentZ * 0.4)) * 0.45;
-            rock.scale.set(scaleX, scaleY, scaleZ);
+          const rock = new THREE.Mesh(chosenGeo, chosenMat);
+          const scaleX = 0.75 + Math.abs(Math.sin(currentZ * 0.9)) * 0.45;
+          const scaleY = 0.55 + Math.abs(Math.cos(currentZ * 0.7)) * 0.35;
+          const scaleZ = 0.75 + Math.abs(Math.sin(currentZ * 0.4)) * 0.45;
+          rock.scale.set(scaleX, scaleY, scaleZ);
 
-            // Sits slightly submerged in the riverbed with rocky crest emerging into spray
-            const rockY = waterY + scaleY * 0.35;
-            rock.position.set(rockX, rockY, rockZ);
+          // Sits slightly submerged in the riverbed with rocky crest emerging into spray
+          const rockY = waterY + scaleY * 0.35;
+          rock.position.set(rockX, rockY, rockZ);
 
-            // Natural rock orientation: yaw rotated freely, pitch/roll subtly tilted
-            const yaw = (currentZ * 1.7 + b * 2.3) % (Math.PI * 2);
-            const pitch = Math.sin(currentZ * 0.6) * 0.22;
-            const roll = Math.cos(currentZ * 0.8) * 0.18;
-            rock.rotation.set(pitch, yaw, roll);
-            rock.castShadow = true;
-            chunk.bouldersGroup.add(rock);
+          // Natural rock orientation: yaw rotated freely, pitch/roll subtly tilted
+          const yaw = (currentZ * 1.7 + b * 2.3) % (Math.PI * 2);
+          const pitch = Math.sin(currentZ * 0.6) * 0.22;
+          const roll = Math.cos(currentZ * 0.8) * 0.18;
+          rock.rotation.set(pitch, yaw, roll);
+          rock.castShadow = true;
+          chunk.bouldersGroup.add(rock);
 
-            // Foaming whitewater crest collar around boulder
-            const foam = new THREE.Mesh(this.foamGeo, this.foamMaterial);
-            foam.position.set(rockX, waterY + 0.06, rockZ);
-            chunk.bouldersGroup.add(foam);
-            chunk.foamCollars.push(foam);
+          // Foaming whitewater crest collar around boulder
+          const foam = new THREE.Mesh(this.foamGeo, this.foamMaterial);
+          foam.position.set(rockX, waterY + 0.06, rockZ);
+          chunk.bouldersGroup.add(foam);
+          chunk.foamCollars.push(foam);
+        }
+      }
+
+      // Generate triangle indices only for segments where both endpoints are in canyon terrain
+      for (let zi = 0; zi < numZSteps; zi++) {
+        if (stepInCanyon[zi] && stepInCanyon[zi + 1]) {
+          const v0 = stepVertexStart[zi];
+          const v1 = stepVertexStart[zi + 1];
+          for (let wi = 0; wi < numWSteps; wi++) {
+            const i0 = v0 + wi;
+            const i1 = i0 + 1;
+            const i2 = v1 + wi;
+            const i3 = i2 + 1;
+
+            indices.push(i0, i1, i2);
+            indices.push(i1, i3, i2);
           }
         }
       }
-
-      // Generate triangle indices for this ribbon
-      const cols = numWSteps + 1;
-      for (let zi = 0; zi < numZSteps; zi++) {
-        for (let wi = 0; wi < numWSteps; wi++) {
-          const i0 = branchStartVertex + zi * cols + wi;
-          const i1 = i0 + 1;
-          const i2 = branchStartVertex + (zi + 1) * cols + wi;
-          const i3 = i2 + 1;
-
-          indices.push(i0, i1, i2);
-          indices.push(i1, i3, i2);
-        }
-      }
     }
+
+    const geo = chunk.waterMesh.geometry;
+
+    if (indices.length === 0) {
+      chunk.group.visible = false;
+      geo.setDrawRange(0, 0);
+      geo.setIndex([]);
+      return;
+    }
+
+    chunk.group.visible = true;
 
     // Update river buffer geometry
-    const geo = chunk.waterMesh.geometry;
-    const posAttr = geo.attributes.position as THREE.BufferAttribute;
-    const uvAttr = geo.attributes.uv as THREE.BufferAttribute;
+    let posAttr = geo.attributes.position as THREE.BufferAttribute;
+    let uvAttr = geo.attributes.uv as THREE.BufferAttribute;
 
-    const posArray = posAttr.array as Float32Array;
-    const uvArray = uvAttr.array as Float32Array;
+    if (!posAttr || posAttr.count < positions.length / 3) {
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+      geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+    } else {
+      const posArray = posAttr.array as Float32Array;
+      const uvArray = uvAttr.array as Float32Array;
 
-    for (let i = 0; i < positions.length; i++) {
-      posArray[i] = positions[i];
-    }
-    for (let i = 0; i < uvs.length; i++) {
-      uvArray[i] = uvs[i];
+      for (let i = 0; i < positions.length; i++) {
+        posArray[i] = positions[i];
+      }
+      for (let i = 0; i < uvs.length; i++) {
+        uvArray[i] = uvs[i];
+      }
+      posAttr.needsUpdate = true;
+      uvAttr.needsUpdate = true;
     }
 
     geo.setIndex(indices);
-    posAttr.needsUpdate = true;
-    uvAttr.needsUpdate = true;
+    geo.setDrawRange(0, indices.length);
     geo.computeVertexNormals();
     geo.computeBoundingBox();
     geo.computeBoundingSphere();

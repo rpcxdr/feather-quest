@@ -5,6 +5,7 @@ import { CloudDissolve } from './CloudDissolve';
 import { AmbientButtonClouds } from './AmbientButtonClouds';
 import { MapModal } from './MapModal';
 import { TatteredMapButton } from './TatteredMapButton';
+import { TilePlayIndicator, ClickedTilePosition } from './TilePlayIndicator';
 import { flightPathHistory } from '../game/flightPathHistory';
 import {
   Volume2,
@@ -56,6 +57,32 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({
   const [isMapOpen, setIsMapOpen] = useState(false);
   const [showConfirmReset, setShowConfirmReset] = useState(false);
   const [resetSuccess, setResetSuccess] = useState(false);
+
+  // Persistent click animation when selecting a map tile (persists after modal closes)
+  const [tileSelectionAnim, setTileSelectionAnim] = useState<{
+    id: number;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  } | null>(null);
+
+  const handleMapSelectStartLevel = useCallback(
+    (level: number, col: number, clickPos?: ClickedTilePosition) => {
+      if (clickPos) {
+        setTileSelectionAnim({
+          id: Date.now(),
+          x: clickPos.x,
+          y: clickPos.y,
+          width: clickPos.width,
+          height: clickPos.height,
+        });
+      }
+      setIsMapOpen(false);
+      onSelectStartLevel?.(level, col);
+    },
+    [onSelectStartLevel]
+  );
 
   // Check if player has played one or more times
   const [historyCount, setHistoryCount] = useState<number>(() => {
@@ -619,8 +646,29 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({
         currentDistance={stats.distance}
         currentStartLevel={stats.startLevel ?? 0}
         currentStartCol={stats.startCol ?? 2}
-        onSelectStartLevel={onSelectStartLevel}
+        onSelectStartLevel={handleMapSelectStartLevel}
       />
+
+      {/* Persistent Map Tile Selection Animation (persists after modal closes, showing where user tapped) */}
+      {tileSelectionAnim && (
+        <div
+          key={tileSelectionAnim.id}
+          className="fixed pointer-events-none z-50 -translate-x-1/2 -translate-y-1/2 flex items-center justify-center animate-tile-select-burst select-none"
+          style={{
+            left: `${tileSelectionAnim.x}px`,
+            top: `${tileSelectionAnim.y}px`,
+            width: `${Math.max(68, tileSelectionAnim.width)}px`,
+            height: `${Math.max(68, tileSelectionAnim.height)}px`,
+          }}
+          onAnimationEnd={() => setTileSelectionAnim(null)}
+        >
+          {/* Ambient expanding glowing golden ripple ring */}
+          <div className="absolute inset-0 rounded-2xl border-2 border-amber-400/90 bg-amber-400/20 shadow-[0_0_20px_rgba(251,191,36,0.6)] animate-tile-ripple pointer-events-none" />
+
+          {/* Reusable Play Button indicator panel */}
+          <TilePlayIndicator />
+        </div>
+      )}
     </div>
   );
 };
