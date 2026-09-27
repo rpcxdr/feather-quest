@@ -25,7 +25,7 @@ export const TatteredMapButton: React.FC<TatteredMapButtonProps> = ({ onClick })
       }}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
-      className="pointer-events-auto cursor-pointer relative group flex items-center justify-center w-72 h-26 sm:w-84 sm:h-28 md:w-96 md:h-32 select-none transition-all duration-300 transform hover:scale-105 active:scale-95 focus:outline-none"
+      className="pointer-events-auto cursor-pointer relative group flex items-center justify-center w-60 h-20 sm:w-72 sm:h-24 md:w-84 md:h-28 lg:w-96 lg:h-32 select-none transition-all duration-300 transform hover:scale-105 active:scale-95 focus:outline-none"
       aria-label="Open Flight Map"
       title="Open Flight Path Map"
     >

@@ -199,6 +199,7 @@ export const GameCanvas: React.FC = () => {
       target.closest('#btn-camera-toggle-playing') ||
       target.closest('#btn-map-toggle') ||
       target.closest('#btn-map-bottom') ||
+      target.closest('#container-map-bottom') ||
       target.closest('#map-modal-backdrop') ||
       target.closest('#map-modal-dialog') ||
       target.closest('#options-modal-overlay') ||

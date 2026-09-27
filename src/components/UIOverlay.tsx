@@ -339,7 +339,9 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({
       </header>
 
       {/* Center Screen: Large Single "Fly" Button or Game Over */}
-      <main className="self-center flex flex-col items-center justify-center my-auto z-20 w-full max-w-4xl pointer-events-none">
+      <main className={`self-center flex flex-col items-center justify-center my-auto z-20 w-full max-w-4xl pointer-events-none ${
+        gameState === 'READY' && hasPlayed ? 'pb-20 sm:pb-24 md:pb-0' : ''
+      }`}>
         {/* Single Very Large In-Theme "Fly" Button when in READY state */}
         {(gameState === 'READY' || isDissolving) && (
           <div className="relative flex flex-col items-center justify-center pointer-events-none">
@@ -409,15 +411,16 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({
         )}
       </main>
 
-      {/* Bottom Footer: Map Button on Home Page (if player has played) or Spacer */}
-      {gameState === 'READY' && !isDissolving && hasPlayed ? (
-        <div className="relative z-20 flex flex-col items-center justify-center pb-1 sm:pb-3 pointer-events-none animate-fade-in shrink-0">
+      {/* Bottom Map Button on Home Page (if player has played) */}
+      {gameState === 'READY' && !isDissolving && hasPlayed && (
+        <div
+          id="container-map-bottom"
+          className="fixed bottom-[max(0.75rem,env(safe-area-inset-bottom,0px))] sm:bottom-4 md:bottom-6 left-1/2 -translate-x-1/2 z-20 flex flex-col items-center justify-center pointer-events-none animate-fade-in"
+        >
           <TatteredMapButton
             onClick={() => setIsMapOpen(true)}
           />
         </div>
-      ) : (
-        <div className="h-2 z-20 shrink-0" />
       )}
 
       {/* Options Modal Dialog Overlay */}
