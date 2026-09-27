@@ -177,7 +177,8 @@ export class TotemTimerBar {
     camera: THREE.Camera,
     speedTime: number,
     immunityTime: number,
-    maxDuration: number = 5.0
+    maxDuration: number = 5.0,
+    isFirstPerson: boolean = false
   ) {
     const hasSpeed = speedTime > 0.02;
     const hasImmunity = immunityTime > 0.02;
@@ -192,8 +193,19 @@ export class TotemTimerBar {
     }
 
     this.group.visible = true;
-    this.group.position.copy(birdPos);
-    this.group.quaternion.copy(camera.quaternion);
+
+    if (isFirstPerson) {
+      // In first-person cockpit, float HUD timer bar in front of camera at bottom edge
+      const camForward = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+      const camUp = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion);
+      this.group.position.copy(camera.position).addScaledVector(camForward, 2.4).addScaledVector(camUp, -0.75);
+      this.group.quaternion.copy(camera.quaternion);
+      this.group.scale.set(0.68, 0.68, 0.68);
+    } else {
+      this.group.position.copy(birdPos);
+      this.group.quaternion.copy(camera.quaternion);
+      this.group.scale.set(1.0, 1.0, 1.0);
+    }
 
     if (hasSpeed && hasImmunity) {
       // Both active: neatly stack speed on top, immunity below, sitting directly under the shield sphere (radius ~0.98 - 1.22)

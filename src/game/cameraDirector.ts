@@ -97,10 +97,29 @@ export class CinematicCameraDirector {
   // Orbit angle for game over state
   private gameOverOrbitAngle: number = 0;
 
+  // First Person Camera State
+  private isFirstPerson: boolean = false;
+
   constructor(fov = 64, aspect = 16 / 9) {
     this.camera = new THREE.PerspectiveCamera(fov, aspect, 0.3, 300);
     this.currentShotIndex = 0;
     this.targetShotIndex = 0;
+  }
+
+  public setFirstPerson(enabled: boolean) {
+    this.isFirstPerson = enabled;
+    if (!enabled) {
+      this.transitionAlpha = 0.0;
+    }
+  }
+
+  public getIsFirstPerson(): boolean {
+    return this.isFirstPerson;
+  }
+
+  public toggleFirstPerson(): boolean {
+    this.setFirstPerson(!this.isFirstPerson);
+    return this.isFirstPerson;
   }
 
   public setAutoDrift(enabled: boolean) {
@@ -112,10 +131,16 @@ export class CinematicCameraDirector {
   }
 
   public getCurrentShotName(): string {
+    if (this.isFirstPerson) {
+      return 'First Person (Cockpit)';
+    }
     return SHOT_PRESETS[this.currentShotIndex].name;
   }
 
   public getCurrentAngleType(): CameraAngle {
+    if (this.isFirstPerson) {
+      return 'FIRST_PERSON';
+    }
     return SHOT_PRESETS[this.currentShotIndex].angleType;
   }
 
@@ -142,7 +167,14 @@ export class CinematicCameraDirector {
     this.transitionAlpha = 0.0;
   }
 
-  public reset(birdPos: THREE.Vector3, frame: PathFrame, pathDistance: number = 0) {
+  public reset(
+    birdPos: THREE.Vector3,
+    frame: PathFrame,
+    pathDistance: number = 0,
+    birdQuat?: THREE.Quaternion,
+    obstacles?: ObstacleData[],
+    activeBranch?: 'SINGLE' | 'LEFT' | 'RIGHT'
+  ) {
     this.currentShotIndex = 0;
     this.targetShotIndex = 0;
     this.shotTimer = 0;
@@ -153,6 +185,33 @@ export class CinematicCameraDirector {
     this.ringShakeIntensity = 0;
     this.currentSplitFactor = this.calculateSplitApproachFactor(pathDistance);
 
+    if (this.isFirstPerson) {
+      const quat = birdQuat || new THREE.Quaternion();
+      const up = new THREE.Vector3(0, 1, 0).applyQuaternion(quat);
+      const eyeOffset = new THREE.Vector3(0, 0.28, 0.48).applyQuaternion(quat);
+
+      this.currentPos.copy(birdPos).add(eyeOffset);
+
+      // Stabilized pitch: use the path angle (not the terrain) below the bird to set camera pitch
+      const birdForward = new THREE.Vector3(0, 0, 1).applyQuaternion(quat);
+      const birdYaw = Math.atan2(birdForward.x, birdForward.z);
+      const pathPitch = Math.asin(THREE.MathUtils.clamp(frame.tangent.y, -1.0, 1.0));
+      const cosPitch = Math.cos(pathPitch);
+      const aimDir = new THREE.Vector3(
+        Math.sin(birdYaw) * cosPitch,
+        Math.sin(pathPitch),
+        Math.cos(birdYaw) * cosPitch
+      ).normalize();
+
+      this.currentLookAt.copy(this.currentPos).addScaledVector(aimDir, 30.0);
+      this.camera.up.copy(up);
+      this.camera.position.copy(this.currentPos);
+      this.camera.lookAt(this.currentLookAt);
+      this.camera.fov = 78;
+      this.camera.updateProjectionMatrix();
+      return;
+    }
+
     const shot = SHOT_PRESETS[0];
     const initialCamPos = this.calculateShotPosition(birdPos, frame, shot, this.currentSplitFactor);
     const initialLookAt = this.calculateShotLookAt(birdPos, frame, shot, this.currentSplitFactor);
@@ -162,6 +221,7 @@ export class CinematicCameraDirector {
     this.applyTerrainAvoidance(this.currentPos, frame);
     this.enforceAbsoluteTerrainClearance(this.currentPos, frame);
 
+    this.camera.up.set(0, 1, 0);
     this.camera.position.copy(this.currentPos);
     this.camera.lookAt(this.currentLookAt);
     const narrow = this.getNarrowScreenFactor();
@@ -451,11 +511,67 @@ export class CinematicCameraDirector {
     isAlive: boolean,
     pathDistance: number = 0,
     obstacles?: ObstacleData[],
-    activeBranch?: 'SINGLE' | 'LEFT' | 'RIGHT'
+    activeBranch?: 'SINGLE' | 'LEFT' | 'RIGHT',
+    birdQuat?: THREE.Quaternion
   ) {
     this.noiseTimer += delta * 1.5;
 
     if (isAlive) {
+      if (this.isFirstPerson) {
+        const quat = birdQuat || new THREE.Quaternion();
+        const up = new THREE.Vector3(0, 1, 0).applyQuaternion(quat);
+        const right = new THREE.Vector3(1, 0, 0).applyQuaternion(quat);
+
+        // Position camera right at eye height looking forward along beak
+        const eyeOffset = new THREE.Vector3(0, 0.28, 0.48).applyQuaternion(quat);
+        const targetPos = birdPos.clone().add(eyeOffset);
+
+        // Stabilized pitch: use the path angle (not the terrain) below the bird to set camera pitch
+        const birdForward = new THREE.Vector3(0, 0, 1).applyQuaternion(quat);
+        const birdYaw = Math.atan2(birdForward.x, birdForward.z);
+        const pathPitch = Math.asin(THREE.MathUtils.clamp(frame.tangent.y, -1.0, 1.0));
+        const cosPitch = Math.cos(pathPitch);
+        const aimDir = new THREE.Vector3(
+          Math.sin(birdYaw) * cosPitch,
+          Math.sin(pathPitch),
+          Math.cos(birdYaw) * cosPitch
+        ).normalize();
+        const targetLook = targetPos.clone().addScaledVector(aimDir, 30.0);
+
+        // FOV calculations for First Person (immersive 78° base + speed/punch dynamics)
+        this.breakthroughFovPunch = THREE.MathUtils.lerp(this.breakthroughFovPunch, 0, delta * 3.8);
+        this.ringFovPunch = THREE.MathUtils.lerp(this.ringFovPunch, 0, delta * 8.5);
+        const baseFov = 78.0;
+        const targetFov = baseFov - verticalVel * 0.25 + this.breakthroughFovPunch + this.ringFovPunch;
+        this.camera.fov = THREE.MathUtils.lerp(this.camera.fov, THREE.MathUtils.clamp(targetFov, 65, 95), delta * 8.0);
+        this.camera.updateProjectionMatrix();
+
+        // Responsive tracking to eliminate latency on player flap/dive while maintaining silk smoothness
+        const dampPos = 1.0 - Math.exp(-24.0 * delta);
+        this.currentPos.lerp(targetPos, dampPos);
+        this.currentLookAt.lerp(targetLook, dampPos);
+
+        // Tactile micro-shake on ring impact
+        if (this.ringShakeTimer > 0) {
+          this.ringShakeTimer -= delta;
+          const shakeProgress = Math.max(0, this.ringShakeTimer / 0.15);
+          const shakeAmount = Math.sin(this.ringShakeTimer * 65.0) * this.ringShakeIntensity * shakeProgress;
+          this.currentPos.addScaledVector(right, shakeAmount * 0.5);
+          this.currentPos.addScaledVector(up, shakeAmount * 0.35);
+        }
+
+        // Aerodynamic banking roll: camera rolls to match bird's wing banking into turns
+        const dampUp = 1.0 - Math.exp(-18.0 * delta);
+        this.camera.up.lerp(up, dampUp);
+
+        this.camera.position.copy(this.currentPos);
+        this.camera.lookAt(this.currentLookAt);
+        return;
+      }
+
+      // Restoring camera.up for Third Person
+      this.camera.up.lerp(new THREE.Vector3(0, 1, 0), 1.0 - Math.exp(-12.0 * delta));
+
       // 1. Organic cinematic shot drifting
       if (this.isAutoDrift) {
         this.shotTimer += delta;
@@ -554,6 +670,9 @@ export class CinematicCameraDirector {
       // Enforce absolute clearance on currentPos so it never clips terrain during fast moves
       this.enforceAbsoluteTerrainClearance(this.currentPos, frame);
     } else {
+      // Restore camera.up to world vertical
+      this.camera.up.set(0, 1, 0);
+
       // Cinematic Game Over slow drift / orbit around fallen bird
       this.gameOverOrbitAngle += delta * 0.45;
       const orbitDist = 4.2;

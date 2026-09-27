@@ -117,6 +117,73 @@ export const MapModal: React.FC<MapModalProps> = ({
   const totalLevelsCount = levels.length;
   const totalContentHeight = totalLevelsCount * levelUnitSize;
 
+  // Scroll & viewport measurement for windowed virtualization
+  const initialScrollTop = useMemo(() => {
+    const targetLvl = currentStartLevel ?? 0;
+    const tileCenterY = 20 + totalContentHeight - (targetLvl + 0.5) * levelUnitSize;
+    return Math.max(0, tileCenterY - 300);
+  }, [totalContentHeight, currentStartLevel, levelUnitSize]);
+
+  const [scrollState, setScrollState] = useState<{ scrollTop: number; clientHeight: number }>({
+    scrollTop: initialScrollTop,
+    clientHeight: 600,
+  });
+
+  // Track scroll position of the map viewport with requestAnimationFrame throttling
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || !isOpen) return;
+
+    let rafId: number | null = null;
+    const onScroll = () => {
+      if (rafId !== null) return;
+      rafId = requestAnimationFrame(() => {
+        rafId = null;
+        if (scrollRef.current) {
+          setScrollState({
+            scrollTop: scrollRef.current.scrollTop,
+            clientHeight: scrollRef.current.clientHeight,
+          });
+        }
+      });
+    };
+
+    el.addEventListener('scroll', onScroll, { passive: true });
+    // Initial measurement
+    setScrollState({
+      scrollTop: el.scrollTop,
+      clientHeight: el.clientHeight,
+    });
+
+    return () => {
+      el.removeEventListener('scroll', onScroll);
+      if (rafId !== null) cancelAnimationFrame(rafId);
+    };
+  }, [isOpen, totalContentHeight]);
+
+  // Compute visible level range with a 2.5-level buffer above and below for seamless scrolling
+  const visibleRange = useMemo(() => {
+    const overscan = levelUnitSize * 2.5;
+    const viewTop = Math.max(0, scrollState.scrollTop - overscan);
+    const viewBottom = scrollState.scrollTop + (scrollState.clientHeight || 600) + overscan;
+
+    const minLevel = Math.max(
+      0,
+      Math.floor((20 + totalContentHeight - viewBottom) / levelUnitSize)
+    );
+    const maxLevel = Math.min(
+      totalLevelsCount - 1,
+      Math.ceil((20 + totalContentHeight - viewTop) / levelUnitSize)
+    );
+
+    return { minLevel, maxLevel };
+  }, [scrollState.scrollTop, scrollState.clientHeight, totalContentHeight, levelUnitSize, totalLevelsCount]);
+
+  // Virtualized levels subset: only renders level rows inside or adjacent to the viewport
+  const visibleLevels = useMemo(() => {
+    return levels.filter((lvl) => lvl >= visibleRange.minLevel && lvl <= visibleRange.maxLevel);
+  }, [levels, visibleRange.minLevel, visibleRange.maxLevel]);
+
   // (2) When opening the modal, scroll so that current "Start" tile is centered; best effort
   useEffect(() => {
     if (isOpen && scrollRef.current) {
@@ -430,9 +497,9 @@ export const MapModal: React.FC<MapModalProps> = ({
             className="relative w-full max-w-md mx-auto"
             style={{ height: `${Math.max(340, totalContentHeight + 20)}px` }}
           >
-            {/* Topographic & Biome Voxel Terrain Background Canvas */}
+            {/* Topographic & Biome Voxel Terrain Background Canvas with Viewport Windowing */}
             <div
-              className="absolute inset-x-0 overflow-hidden rounded-2xl border border-white/10 shadow-2xl"
+              className="absolute inset-x-0 overflow-hidden rounded-2xl border border-white/10 shadow-2xl bg-slate-950/90"
               style={{ height: `${totalContentHeight}px`, top: 20 }}
             >
               <TerrainMapCanvas
@@ -440,15 +507,16 @@ export const MapModal: React.FC<MapModalProps> = ({
                 height={totalContentHeight}
                 totalLevels={totalLevelsCount}
                 levelUnitSize={levelUnitSize}
+                visibleRange={visibleRange}
               />
             </div>
 
-            {/* Level grid with special case for Level 0 start square */}
+            {/* Level grid with windowed virtualization and smooth fade-in as tiles scroll into view */}
             <div
               className="absolute inset-0"
               style={{ height: `${totalContentHeight}px`, top: 20 }}
             >
-              {levels.map((lvl) => {
+              {visibleLevels.map((lvl) => {
                 const rowTop = totalContentHeight - (lvl + 1) * levelUnitSize;
 
                 // Special case for the start square:
@@ -460,7 +528,7 @@ export const MapModal: React.FC<MapModalProps> = ({
                   return (
                     <div
                       key={`level-row-${lvl}`}
-                      className="absolute left-0 right-0 flex items-center"
+                      className="absolute left-0 right-0 flex items-center animate-map-tile-fade"
                       style={{
                         top: `${rowTop}px`,
                         height: `${levelUnitSize}px`,
@@ -477,7 +545,7 @@ export const MapModal: React.FC<MapModalProps> = ({
                           width: `${levelUnitSize}px`,
                           height: `${levelUnitSize}px`,
                         }}
-                        className={`absolute group transition-all duration-150 flex items-center justify-center p-1 select-none overflow-hidden ${
+                        className={`absolute group transition-all duration-150 flex items-center justify-center p-1 select-none overflow-hidden animate-map-tile-fade ${
                           isStartSelected
                             ? 'bg-amber-500/35 border-2 border-amber-400 ring-2 ring-inset ring-amber-400/90 shadow-[0_0_15px_rgba(251,191,36,0.35)] z-20 cursor-pointer'
                             : 'hover:bg-amber-400/20 active:bg-amber-500/30 backdrop-blur-[0.5px] cursor-pointer hover:z-20'
@@ -505,7 +573,7 @@ export const MapModal: React.FC<MapModalProps> = ({
                 return (
                   <div
                     key={`level-row-${lvl}`}
-                    className="absolute left-0 right-0 flex items-center"
+                    className="absolute left-0 right-0 flex items-center animate-map-tile-fade"
                     style={{
                       top: `${rowTop}px`,
                       height: `${levelUnitSize}px`,
@@ -526,7 +594,10 @@ export const MapModal: React.FC<MapModalProps> = ({
                             type="button"
                             disabled={!isEntered}
                             onClick={() => handleSelectSquare(lvl, col)}
-                            className={`relative group transition-all duration-150 flex items-center justify-center p-1 select-none overflow-hidden ${
+                            style={{
+                              animationDelay: `${col * 28}ms`,
+                            }}
+                            className={`relative group transition-all duration-150 flex items-center justify-center p-1 select-none overflow-hidden animate-map-tile-fade ${
                               isStartSelected
                                 ? 'bg-amber-500/35 border-2 border-amber-400 ring-2 ring-inset ring-amber-400/90 shadow-[0_0_15px_rgba(251,191,36,0.35)] z-20 cursor-pointer'
                                 : isEntered

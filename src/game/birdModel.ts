@@ -51,6 +51,10 @@ export class BirdCharacter {
   private nextSpeedParticleIndex: number = 0;
   private scratchTipPos: THREE.Vector3 = new THREE.Vector3();
 
+  // First Person Cockpit Mode
+  private isFirstPerson: boolean = false;
+  private characterModelGroup: THREE.Group;
+
   // Animation states
   private flapPhase: number = 0;
   private flapSpeed: number = 8;
@@ -59,6 +63,8 @@ export class BirdCharacter {
 
   constructor() {
     this.group = new THREE.Group();
+    this.characterModelGroup = new THREE.Group();
+    this.group.add(this.characterModelGroup);
 
     // ----------------------------------------------------
     // 1. SMOOTH SCULPTED MATERIALS
@@ -145,14 +151,14 @@ export class BirdCharacter {
     this.bodyMesh.position.set(0, 0, 0);
     this.bodyMesh.castShadow = true;
     this.bodyMesh.receiveShadow = true;
-    this.group.add(this.bodyMesh);
+    this.characterModelGroup.add(this.bodyMesh);
 
     // Smooth underbelly curve
     const bellyGeo = new THREE.SphereGeometry(0.44, 28, 20);
     bellyGeo.scale(0.78, 0.82, 1.15);
     const bellyMesh = new THREE.Mesh(bellyGeo, bellyMat);
     bellyMesh.position.set(0, -0.06, 0.06);
-    this.group.add(bellyMesh);
+    this.characterModelGroup.add(bellyMesh);
 
     // Golden feather patches on side shoulders
     const shoulderPatchGeo = new THREE.SphereGeometry(0.24, 20, 16);
@@ -161,12 +167,12 @@ export class BirdCharacter {
     const leftShoulder = new THREE.Mesh(shoulderPatchGeo, goldenYellowMat);
     leftShoulder.position.set(-0.33, 0.08, 0.05);
     leftShoulder.rotation.z = -0.15;
-    this.group.add(leftShoulder);
+    this.characterModelGroup.add(leftShoulder);
 
     const rightShoulder = new THREE.Mesh(shoulderPatchGeo, goldenYellowMat);
     rightShoulder.position.set(0.33, 0.08, 0.05);
     rightShoulder.rotation.z = 0.15;
-    this.group.add(rightShoulder);
+    this.characterModelGroup.add(rightShoulder);
 
     // ----------------------------------------------------
     // 3. SMOOTH SCULPTED PARROT HEAD & FACE
@@ -291,7 +297,7 @@ export class BirdCharacter {
     this.crestPivot.add(smallCrestMesh);
 
     this.headGroup.add(this.crestPivot);
-    this.group.add(this.headGroup);
+    this.characterModelGroup.add(this.headGroup);
 
     // ----------------------------------------------------
     // 4. SMOOTH SCULPTED ARTICULATED WINGS
@@ -353,7 +359,7 @@ export class BirdCharacter {
     this.leftWingTipGroup.add(leftTipWing);
     this.leftWingPivot.add(this.leftWingTipGroup);
 
-    this.group.add(this.leftWingPivot);
+    this.characterModelGroup.add(this.leftWingPivot);
 
     // RIGHT WING
     this.rightWingPivot = new THREE.Group();
@@ -407,7 +413,7 @@ export class BirdCharacter {
     this.rightWingTipGroup.add(rightTipWing);
     this.rightWingPivot.add(this.rightWingTipGroup);
 
-    this.group.add(this.rightWingPivot);
+    this.characterModelGroup.add(this.rightWingPivot);
 
     // ----------------------------------------------------
     // 5. LONG FLOWING SCULPTED MACAW TAIL
@@ -450,7 +456,7 @@ export class BirdCharacter {
     rightStreamer.castShadow = true;
     this.tailPivot.add(rightStreamer);
 
-    this.group.add(this.tailPivot);
+    this.characterModelGroup.add(this.tailPivot);
 
     // ----------------------------------------------------
     // 6. SMOOTH SCULPTED FEET / CLAWS
@@ -478,7 +484,7 @@ export class BirdCharacter {
     leftToe2.rotation.z = -0.2;
     leftFootGroup.add(leftToe2);
 
-    this.group.add(leftFootGroup);
+    this.characterModelGroup.add(leftFootGroup);
 
     // Right Foot
     const rightFootGroup = new THREE.Group();
@@ -500,7 +506,7 @@ export class BirdCharacter {
     rightToe2.rotation.z = 0.2;
     rightFootGroup.add(rightToe2);
 
-    this.group.add(rightFootGroup);
+    this.characterModelGroup.add(rightFootGroup);
 
     // ----------------------------------------------------
     // 7. SMOOTH DRIFTING FEATHER PARTICLES (Crash FX)
@@ -739,7 +745,22 @@ export class BirdCharacter {
     emitBurst(this.rightWingTipGroup);
   }
 
+  public setFirstPerson(enabled: boolean) {
+    this.isFirstPerson = enabled;
+    this.characterModelGroup.visible = !enabled;
+  }
+
+  public getIsFirstPerson(): boolean {
+    return this.isFirstPerson;
+  }
+
   public update(delta: number, verticalVel: number, isAlive: boolean) {
+    if (!isAlive) {
+      this.characterModelGroup.visible = true;
+    } else {
+      this.characterModelGroup.visible = !this.isFirstPerson;
+    }
+
     if (isAlive) {
       // Natural flap speed decaying toward a calm cruise glide
       this.flapSpeed = THREE.MathUtils.lerp(this.flapSpeed, 7.2, delta * 3.2);
@@ -950,6 +971,7 @@ export class BirdCharacter {
     this.isImmunityActive = false;
     this.isSpeedActive = false;
     this.shieldDeflectPulse = 0;
+    this.characterModelGroup.visible = !this.isFirstPerson;
     if (this.immunityShieldGroup) {
       this.immunityShieldGroup.visible = false;
     }

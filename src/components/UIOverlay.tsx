@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { GameState, GameStats } from '../types';
+import { GameState, GameStats, CameraMode } from '../types';
 import { CloudDissolve } from './CloudDissolve';
 import { AmbientButtonClouds } from './AmbientButtonClouds';
 import { MapModal } from './MapModal';
@@ -17,6 +17,8 @@ import {
   X,
   AlertTriangle,
   Check,
+  Eye,
+  Video,
 } from 'lucide-react';
 
 interface UIOverlayProps {
@@ -24,9 +26,13 @@ interface UIOverlayProps {
   score: number;
   stats: GameStats;
   isMuted: boolean;
+  cameraMode?: CameraMode;
+  cameraToast?: { message: string; mode: CameraMode } | null;
   onFlap: () => void;
   onRestart: () => void;
   onToggleMute: () => void;
+  onToggleCameraMode?: () => void;
+  onSetCameraMode?: (mode: CameraMode) => void;
   onResetAllRecords: () => void;
   onSelectStartLevel?: (level: number, col: number) => void;
 }
@@ -36,9 +42,13 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({
   score,
   stats,
   isMuted,
+  cameraMode = 'THIRD_PERSON',
+  cameraToast,
   onFlap,
   onRestart,
   onToggleMute,
+  onToggleCameraMode,
+  onSetCameraMode,
   onResetAllRecords,
   onSelectStartLevel,
 }) => {
@@ -159,6 +169,21 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({
         onComplete={handleCloudDissolveComplete}
       />
 
+      {/* Camera Mode Toast Indicator */}
+      {cameraToast && (
+        <div className="fixed top-14 sm:top-16 left-1/2 -translate-x-1/2 z-40 pointer-events-none animate-scale-in">
+          <div className="flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-slate-900/90 border border-white/20 backdrop-blur-md shadow-2xl text-xs font-semibold text-white">
+            {cameraToast.mode === 'FIRST_PERSON' ? (
+              <Eye className="w-3.5 h-3.5 text-amber-400" />
+            ) : (
+              <Video className="w-3.5 h-3.5 text-cyan-400" />
+            )}
+            <span>{cameraToast.message}</span>
+            <span className="text-[10px] text-slate-400 font-mono pl-1 border-l border-white/10">Key: C</span>
+          </div>
+        </div>
+      )}
+
       {/* Upper Right Control: Mute Button */}
       <div className="fixed right-4 sm:right-6 top-4 sm:top-6 z-30 pointer-events-none select-none">
         <button
@@ -239,22 +264,61 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({
 
       {/* Top Header Bar */}
       <header className="flex items-start justify-between z-20">
-        {/* Upper Left Control: Settings Gear on Home Page */}
+        {/* Upper Left Control: Settings Gear & Camera Toggle */}
         <div className="flex items-center gap-2 pointer-events-auto">
           {gameState === 'READY' ? (
+            <>
+              <button
+                id="btn-options-gear"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setIsOptionsOpen(true);
+                  setShowConfirmReset(false);
+                  setResetSuccess(false);
+                }}
+                className="w-9 h-9 flex-shrink-0 rounded-full flex items-center justify-center bg-slate-900/80 hover:bg-slate-800 text-slate-200 hover:text-white border border-white/10 backdrop-blur-md shadow-lg transition-all active:scale-95 cursor-pointer"
+                title="Game Options"
+                aria-label="Game Options"
+              >
+                <Settings className="w-4 h-4" />
+              </button>
+              <button
+                id="btn-camera-toggle-header"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onToggleCameraMode?.();
+                }}
+                className={`w-9 h-9 flex-shrink-0 rounded-full flex items-center justify-center border backdrop-blur-md shadow-lg transition-all active:scale-95 cursor-pointer ${
+                  cameraMode === 'FIRST_PERSON'
+                    ? 'border-amber-400/60 bg-amber-500/25 text-amber-300 hover:bg-amber-500/35'
+                    : 'border-white/10 bg-slate-900/80 hover:bg-slate-800 text-slate-200 hover:text-white'
+                }`}
+                title={cameraMode === 'FIRST_PERSON' ? 'First Person Active (Press C to switch)' : 'Third Person Active (Press C to switch)'}
+                aria-label="Toggle Camera Perspective"
+              >
+                {cameraMode === 'FIRST_PERSON' ? <Eye className="w-4 h-4 text-amber-300" /> : <Video className="w-4 h-4 text-slate-200" />}
+              </button>
+            </>
+          ) : gameState === 'PLAYING' ? (
             <button
-              id="btn-options-gear"
+              id="btn-camera-toggle-playing"
               onClick={(e) => {
                 e.stopPropagation();
-                setIsOptionsOpen(true);
-                setShowConfirmReset(false);
-                setResetSuccess(false);
+                onToggleCameraMode?.();
               }}
-              className="w-9 h-9 flex-shrink-0 rounded-full flex items-center justify-center bg-slate-900/80 hover:bg-slate-800 text-slate-200 hover:text-white border border-white/10 backdrop-blur-md shadow-lg transition-all active:scale-95 cursor-pointer"
-              title="Game Options"
-              aria-label="Game Options"
+              className="group relative w-9 h-9 flex-shrink-0 rounded-full flex items-center justify-center pointer-events-auto transition-all active:scale-95 cursor-pointer border-0 shadow-none"
+              title={cameraMode === 'FIRST_PERSON' ? 'First Person Active (Press C to switch)' : 'Third Person Active (Press C to switch)'}
+              aria-label="Toggle Camera Perspective"
             >
-              <Settings className="w-4 h-4" />
+              <span
+                className="absolute inset-0 rounded-full bg-slate-900/50 group-hover:bg-slate-900/70 blur-[3px] shadow-[0_0_8px_rgba(15,23,42,0.5)] pointer-events-none transition-all duration-200"
+                aria-hidden="true"
+              />
+              {cameraMode === 'FIRST_PERSON' ? (
+                <Eye className="relative z-10 w-4 h-4 text-amber-300" />
+              ) : (
+                <Video className="relative z-10 w-4 h-4 text-slate-200" />
+              )}
             </button>
           ) : (
             <div className="w-9 h-9" />
@@ -453,7 +517,53 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({
               </div>
             ) : (
               <div className="flex flex-col gap-3.5">
-                {/* Single Option: Reset All Scores and Flights */}
+                {/* Camera Perspective Option */}
+                <div className="p-3.5 rounded-xl bg-slate-800/70 border border-white/10 flex flex-col gap-2.5">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <div className="p-1.5 rounded-lg bg-amber-500/20 text-amber-400">
+                        {cameraMode === 'FIRST_PERSON' ? <Eye className="w-4 h-4" /> : <Video className="w-4 h-4" />}
+                      </div>
+                      <span className="font-semibold text-sm text-white">Camera Perspective</span>
+                    </div>
+                    <span className="text-[10px] text-slate-400 font-mono bg-white/5 px-2 py-0.5 rounded border border-white/10">
+                      Key: C / V
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-300 leading-relaxed">
+                    Choose between classic cinematic third-person chase or thrilling first-person flight.
+                  </p>
+                  <div className="grid grid-cols-2 gap-2 mt-0.5">
+                    <button
+                      id="btn-option-third-person"
+                      type="button"
+                      onClick={() => onSetCameraMode?.('THIRD_PERSON')}
+                      className={`py-2 px-3 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                        cameraMode === 'THIRD_PERSON'
+                          ? 'bg-amber-400 text-slate-950 font-bold shadow-md shadow-amber-500/20'
+                          : 'bg-slate-900/80 hover:bg-slate-700/80 text-slate-300 border border-white/10'
+                      }`}
+                    >
+                      <Video className="w-3.5 h-3.5" />
+                      <span>Third Person</span>
+                    </button>
+                    <button
+                      id="btn-option-first-person"
+                      type="button"
+                      onClick={() => onSetCameraMode?.('FIRST_PERSON')}
+                      className={`py-2 px-3 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                        cameraMode === 'FIRST_PERSON'
+                          ? 'bg-amber-400 text-slate-950 font-bold shadow-md shadow-amber-500/20'
+                          : 'bg-slate-900/80 hover:bg-slate-700/80 text-slate-300 border border-white/10'
+                      }`}
+                    >
+                      <Eye className="w-3.5 h-3.5" />
+                      <span>First Person</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Option: Reset All Scores and Flights */}
                 <button
                   id="btn-option-reset-high-score"
                   onClick={() => setShowConfirmReset(true)}

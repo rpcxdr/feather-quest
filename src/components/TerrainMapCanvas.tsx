@@ -1,47 +1,68 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useMemo } from 'react';
 import { flightPath, LEVEL_LENGTH } from '../game/pathGenerator';
 import { biomeRegistry, Biome, WATER_LEVEL } from '../biomes';
+
+export interface VisibleLevelRange {
+  minLevel: number;
+  maxLevel: number;
+}
 
 interface TerrainMapCanvasProps {
   width: number;
   height: number;
   totalLevels: number;
   levelUnitSize?: number;
+  visibleRange?: VisibleLevelRange;
 }
 
+interface TerrainLevelTileProps {
+  level: number;
+  width: number;
+  height: number;
+  rowTop: number;
+}
+
+// Module-level in-memory cache so each level's rendered terrain slice is computed at most ONCE
+const tileCanvasCache = new Map<string, HTMLCanvasElement>();
+
 /**
- * Topographic & Biome Terrain Background Canvas
- *
- * Smoothly blends biome colors and topographic hillshading according to the
- * game's continuous mathematical terrain model.
- *
- * Utilizes hardware-accelerated bilinear smoothing and continuous smoothstep
- * transitions so biomes flow naturally into each other without rectangular
- * block artifacts, while remaining ultra-lightweight on CPU.
+ * Individual Virtualized Terrain Level Tile
+ * Computes a lightweight 64x16 sample grid for a single 250m level slice (< 0.2ms),
+ * caches the result, and renders with a graceful fade-in animation as it enters the viewport.
  */
-export const TerrainMapCanvas: React.FC<TerrainMapCanvasProps> = ({
+const TerrainLevelTile: React.FC<TerrainLevelTileProps> = ({
+  level,
   width,
   height,
-  totalLevels,
+  rowTop,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas || width <= 0 || height <= 0 || totalLevels <= 0) return;
+    if (!canvas || width <= 0 || height <= 0) return;
+
+    const w = Math.floor(width);
+    const h = Math.floor(height);
+    canvas.width = w;
+    canvas.height = h;
 
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    canvas.width = Math.floor(width);
-    canvas.height = Math.floor(height);
+    const cacheKey = `${level}_${w}_${h}`;
+    const cached = tileCanvasCache.get(cacheKey);
+    if (cached) {
+      ctx.drawImage(cached, 0, 0, w, h);
+      return;
+    }
 
-    // Offscreen sampling grid dimensions
+    // Single-level offscreen sampling grid:
     // 64 horizontal samples across 300m width (~4.7m resolution)
-    // 16 vertical samples per 250m level (~15.6m resolution)
-    // For 6-10 levels, total samples is only ~6,000 to 10,000 points (< 3ms calculation)
+    // 16 vertical samples for this 250m level (~15.6m resolution)
+    // Total 1,024 points computed in ~0.15ms
     const gridW = 64;
-    const gridH = Math.max(32, totalLevels * 16);
+    const gridH = 16;
 
     const offscreen = document.createElement('canvas');
     offscreen.width = gridW;
@@ -56,44 +77,44 @@ export const TerrainMapCanvas: React.FC<TerrainMapCanvasProps> = ({
     const mountainLowBiome = biomeRegistry.getByChar('m');
     const cloudsBiome = biomeRegistry.getByChar('s');
 
-    // Sample terrain elevation, biome weights, and vertex colors
+    const zStart = level * LEVEL_LENGTH;
+    const zEnd = (level + 1) * LEVEL_LENGTH;
+
     for (let gy = 0; gy < gridH; gy++) {
-      // gy = 0 is the top (furthest distance z)
-      // gy = gridH - 1 is the bottom (start distance z = 0)
-      const normZ = 1.0 - gy / (gridH - 1);
-      const worldZ = normZ * totalLevels * LEVEL_LENGTH;
+      // gy = 0 is top of level slice (zEnd), gy = gridH - 1 is bottom of level slice (zStart)
+      const normY = gy / Math.max(1, gridH - 1);
+      const worldZ = zEnd - normY * (zEnd - zStart);
 
       for (let gx = 0; gx < gridW; gx++) {
-        const normX = gx / (gridW - 1);
-        // Canvas left (normX = 0) aligns with screen left (+150m), canvas right (normX = 1) aligns with screen right (-150m)
+        const normX = gx / Math.max(1, gridW - 1);
         const worldX = (0.5 - normX) * 300.0; // 300m total span (+150m to -150m)
 
         // Query continuous biome weights and natural terrain height
         const weights = flightPath.getBiomeWeights(worldX, worldZ);
-        const h = flightPath.getNaturalTerrainHeight(worldX, worldZ, weights);
+        const elevationH = flightPath.getNaturalTerrainHeight(worldX, worldZ, weights);
 
-        // Compute smooth blended color across biomes (no block noise for continuous gradients)
+        // Compute smooth blended color across biomes
         let totalR = 0;
         let totalG = 0;
         let totalB = 0;
         let totalWeight = 0;
 
         if (weights.biomeWeights) {
-          for (const [biome, w] of weights.biomeWeights.entries()) {
-            if (w > 0.001) {
+          for (const [biome, weightVal] of weights.biomeWeights.entries()) {
+            if (weightVal > 0.001) {
               const [cr, cg, cb] = biome.getVertexColor({
                 x: worldX,
                 z: worldZ,
-                h,
-                distToBranch: 100.0, // Natural terrain surface (avoids artificial 3D pillar foundation/cobblestone artifacts along centerline)
+                h: elevationH,
+                distToBranch: 100.0,
                 blockNoise: 0,
                 bx: Math.floor(worldX),
                 bz: Math.floor(worldZ),
               });
-              totalR += w * cr;
-              totalG += w * cg;
-              totalB += w * cb;
-              totalWeight += w;
+              totalR += weightVal * cr;
+              totalG += weightVal * cg;
+              totalB += weightVal * cb;
+              totalWeight += weightVal;
             }
           }
         }
@@ -108,14 +129,14 @@ export const TerrainMapCanvas: React.FC<TerrainMapCanvasProps> = ({
           totalB = 0.18;
         }
 
-        // Smooth Mountain snow peaks blending
+        // Smooth mountain snow peaks
         const mountainWeight =
           (mountainBiome ? weights.biomeWeights?.get(mountainBiome) || 0 : 0) +
           (mountainLowBiome ? weights.biomeWeights?.get(mountainLowBiome) || 0 : 0) +
           (cloudsBiome ? weights.biomeWeights?.get(cloudsBiome) || 0 : 0);
 
-        if (mountainWeight > 0.01 && h > 18.0) {
-          const snowFactor = mountainWeight * Math.min(1.0, (h - 18.0) / 8.0);
+        if (mountainWeight > 0.01 && elevationH > 18.0) {
+          const snowFactor = mountainWeight * Math.min(1.0, (elevationH - 18.0) / 8.0);
           const smoothSnow = snowFactor * snowFactor * (3.0 - 2.0 * snowFactor);
           totalR = totalR * (1 - smoothSnow) + 0.94 * smoothSnow;
           totalG = totalG * (1 - smoothSnow) + 0.96 * smoothSnow;
@@ -125,14 +146,13 @@ export const TerrainMapCanvas: React.FC<TerrainMapCanvasProps> = ({
         // Continuous smooth topographic hillshading
         const hEast = flightPath.getNaturalTerrainHeight(worldX + 6.0, worldZ, weights);
         const hNorth = flightPath.getNaturalTerrainHeight(worldX, worldZ + 12.0, weights);
-        const dhx = (hEast - h) / 6.0;
-        const dhz = (hNorth - h) / 12.0;
+        const dhx = (hEast - elevationH) / 6.0;
+        const dhz = (hNorth - elevationH) / 12.0;
         const shade = 1.0 + (-dhx * 0.22 + dhz * 0.16);
         let light = Math.max(0.72, Math.min(1.28, shade));
 
-        // Submerged terrain sits under a flat water level; soften hillshading for glassy flat water
-        if (h < WATER_LEVEL) {
-          const depth = WATER_LEVEL - h;
+        if (elevationH < WATER_LEVEL) {
+          const depth = WATER_LEVEL - elevationH;
           const waterCalm = Math.min(1.0, depth / 2.5);
           light = light + (1.0 - light) * (waterCalm * 0.75);
         }
@@ -151,33 +171,103 @@ export const TerrainMapCanvas: React.FC<TerrainMapCanvasProps> = ({
 
     offCtx.putImageData(imgData, 0, 0);
 
-    // Draw the offscreen terrain buffer onto main canvas with high-quality bilinear interpolation
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = 'high';
-    ctx.drawImage(offscreen, 0, 0, width, height);
+    // Blit to cached canvas with bilinear interpolation and subtle aesthetic grading
+    const cachedCanvas = document.createElement('canvas');
+    cachedCanvas.width = w;
+    cachedCanvas.height = h;
+    const cCtx = cachedCanvas.getContext('2d');
+    if (cCtx) {
+      cCtx.imageSmoothingEnabled = true;
+      cCtx.imageSmoothingQuality = 'high';
+      cCtx.drawImage(offscreen, 0, 0, w, h);
 
-    // Subtle atmospheric tint to keep grid lines and flight paths highly readable
-    ctx.fillStyle = 'rgba(10, 15, 26, 0.26)';
-    ctx.fillRect(0, 0, width, height);
+      // Subtle atmospheric tint to keep grid lines and flight paths highly readable
+      cCtx.fillStyle = 'rgba(10, 15, 26, 0.26)';
+      cCtx.fillRect(0, 0, w, h);
 
-    // Soft lateral edge gradient for refined framing
-    const edgeGrad = ctx.createLinearGradient(0, 0, width, 0);
-    edgeGrad.addColorStop(0, 'rgba(3, 7, 18, 0.50)');
-    edgeGrad.addColorStop(0.06, 'rgba(3, 7, 18, 0.0)');
-    edgeGrad.addColorStop(0.94, 'rgba(3, 7, 18, 0.0)');
-    edgeGrad.addColorStop(1, 'rgba(3, 7, 18, 0.50)');
-    ctx.fillStyle = edgeGrad;
-    ctx.fillRect(0, 0, width, height);
-  }, [width, height, totalLevels]);
+      // Soft lateral edge gradient for refined framing
+      const edgeGrad = cCtx.createLinearGradient(0, 0, w, 0);
+      edgeGrad.addColorStop(0, 'rgba(3, 7, 18, 0.50)');
+      edgeGrad.addColorStop(0.06, 'rgba(3, 7, 18, 0.0)');
+      edgeGrad.addColorStop(0.94, 'rgba(3, 7, 18, 0.0)');
+      edgeGrad.addColorStop(1, 'rgba(3, 7, 18, 0.50)');
+      cCtx.fillStyle = edgeGrad;
+      cCtx.fillRect(0, 0, w, h);
+
+      tileCanvasCache.set(cacheKey, cachedCanvas);
+      ctx.drawImage(cachedCanvas, 0, 0, w, h);
+    }
+  }, [level, width, height]);
 
   return (
-    <canvas
-      ref={canvasRef}
-      className="absolute inset-0 pointer-events-none rounded-2xl overflow-hidden shadow-inner"
+    <div
+      className="absolute inset-x-0 pointer-events-none animate-map-tile-fade"
       style={{
-        width: '100%',
+        top: `${rowTop}px`,
         height: `${height}px`,
       }}
-    />
+    >
+      <canvas
+        ref={canvasRef}
+        className="w-full h-full block"
+        style={{ width: `${width}px`, height: `${height}px` }}
+      />
+    </div>
+  );
+};
+
+/**
+ * Topographic & Biome Terrain Background Canvas with Viewport Windowing
+ *
+ * Only generates and renders slices for levels within or immediately adjacent to the
+ * visible scroll viewport. Slices are cached so scrolling is instantaneous, and
+ * new tiles smoothly fade in as the player scrolls up and down the map.
+ */
+export const TerrainMapCanvas: React.FC<TerrainMapCanvasProps> = ({
+  width,
+  height,
+  totalLevels,
+  levelUnitSize,
+  visibleRange,
+}) => {
+  const effectiveUnitSize = levelUnitSize ?? (totalLevels > 0 ? height / totalLevels : 60);
+
+  // Compute the list of level indices to render in the current window
+  const activeLevels = useMemo(() => {
+    const minLvl = visibleRange ? Math.max(0, visibleRange.minLevel) : 0;
+    const maxLvl = visibleRange ? Math.min(totalLevels - 1, visibleRange.maxLevel) : totalLevels - 1;
+
+    const list: number[] = [];
+    for (let l = minLvl; l <= maxLvl; l++) {
+      list.push(l);
+    }
+    return list;
+  }, [visibleRange, totalLevels]);
+
+  if (width <= 0 || height <= 0 || totalLevels <= 0) {
+    return null;
+  }
+
+  return (
+    <div
+      className="absolute inset-0 pointer-events-none overflow-hidden"
+      style={{
+        width: `${width}px`,
+        height: `${height}px`,
+      }}
+    >
+      {activeLevels.map((lvl) => {
+        const rowTop = height - (lvl + 1) * effectiveUnitSize;
+        return (
+          <TerrainLevelTile
+            key={`terrain-slice-${lvl}`}
+            level={lvl}
+            width={width}
+            height={effectiveUnitSize}
+            rowTop={rowTop}
+          />
+        );
+      })}
+    </div>
   );
 };

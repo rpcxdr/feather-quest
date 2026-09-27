@@ -1,6 +1,8 @@
 export type GameState = 'READY' | 'PLAYING' | 'GAMEOVER';
 
-export type CameraAngle = 'CHASE' | 'LEFT_TRACK' | 'RIGHT_TRACK' | 'HIGH_DRONE' | 'LOW_BANK';
+export type CameraAngle = 'CHASE' | 'LEFT_TRACK' | 'RIGHT_TRACK' | 'HIGH_DRONE' | 'LOW_BANK' | 'FIRST_PERSON';
+
+export type CameraMode = 'THIRD_PERSON' | 'FIRST_PERSON';
 
 export interface ActiveBuffs {
   speed: number;    // seconds remaining (0 if inactive)
@@ -54,6 +56,7 @@ export interface GameStats {
   birdPosition?: BirdPositionCoord;
   startLevel?: number;
   startCol?: number;
+  cameraMode?: CameraMode;
 }
 
 export interface ObstacleData {

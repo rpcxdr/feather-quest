@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { GameEngine } from '../game/engine';
-import { GameState, GameStats } from '../types';
+import { GameState, GameStats, CameraMode } from '../types';
 import { soundManager } from '../game/audio';
 import { UIOverlay } from './UIOverlay';
 
@@ -11,6 +11,31 @@ export const GameCanvas: React.FC = () => {
   const [gameState, setGameState] = useState<GameState>('READY');
   const [score, setScore] = useState<number>(0);
   const [isMuted, setIsMuted] = useState<boolean>(soundManager.getIsMuted());
+  const [cameraMode, setCameraMode] = useState<CameraMode>(() => {
+    try {
+      const saved = localStorage.getItem('feather_camera_mode');
+      if (saved === 'FIRST_PERSON' || saved === 'THIRD_PERSON') return saved;
+    } catch {
+      // Ignore
+    }
+    return 'THIRD_PERSON';
+  });
+
+  const [cameraToast, setCameraToast] = useState<{ message: string; mode: CameraMode } | null>(null);
+  const toastTimeoutRef = useRef<number | null>(null);
+
+  const showCameraToast = useCallback((mode: CameraMode) => {
+    if (toastTimeoutRef.current) {
+      window.clearTimeout(toastTimeoutRef.current);
+    }
+    setCameraToast({
+      message: mode === 'FIRST_PERSON' ? 'First Person View' : 'Third Person View',
+      mode,
+    });
+    toastTimeoutRef.current = window.setTimeout(() => {
+      setCameraToast(null);
+    }, 1500);
+  }, []);
 
   const [stats, setStats] = useState<GameStats>({
     score: 0,
@@ -64,6 +89,30 @@ export const GameCanvas: React.FC = () => {
     }
   }, []);
 
+  const handleToggleCameraMode = useCallback(() => {
+    if (!engineRef.current) return;
+    const nextMode = engineRef.current.toggleCameraMode();
+    setCameraMode(nextMode);
+    try {
+      localStorage.setItem('feather_camera_mode', nextMode);
+    } catch {
+      // Ignore
+    }
+    showCameraToast(nextMode);
+  }, [showCameraToast]);
+
+  const handleSetCameraMode = useCallback((mode: CameraMode) => {
+    if (!engineRef.current) return;
+    engineRef.current.setCameraMode(mode);
+    setCameraMode(mode);
+    try {
+      localStorage.setItem('feather_camera_mode', mode);
+    } catch {
+      // Ignore
+    }
+    showCameraToast(mode);
+  }, [showCameraToast]);
+
   // Initialize GameEngine once on mount
   useEffect(() => {
     if (!containerRef.current) return;
@@ -80,6 +129,7 @@ export const GameCanvas: React.FC = () => {
       },
     });
 
+    engine.setCameraMode(cameraMode);
     engineRef.current = engine;
 
     // Handle Window Resize with ResizeObserver
@@ -111,6 +161,10 @@ export const GameCanvas: React.FC = () => {
         const muted = soundManager.toggleMute();
         setIsMuted(muted);
       }
+      if (e.code === 'KeyC' || e.code === 'KeyV') {
+        e.preventDefault();
+        handleToggleCameraMode();
+      }
     };
 
     window.addEventListener('keydown', handleKeyDown, { passive: false });
@@ -140,6 +194,9 @@ export const GameCanvas: React.FC = () => {
     if (
       target.closest('#btn-sound-toggle') ||
       target.closest('#btn-options-gear') ||
+      target.closest('#btn-camera-toggle') ||
+      target.closest('#btn-camera-toggle-header') ||
+      target.closest('#btn-camera-toggle-playing') ||
       target.closest('#btn-map-toggle') ||
       target.closest('#btn-map-bottom') ||
       target.closest('#map-modal-backdrop') ||
@@ -177,9 +234,13 @@ export const GameCanvas: React.FC = () => {
         score={score}
         stats={stats}
         isMuted={isMuted}
+        cameraMode={cameraMode}
+        cameraToast={cameraToast}
         onFlap={handleFlap}
         onRestart={handleRestart}
         onToggleMute={handleToggleMute}
+        onToggleCameraMode={handleToggleCameraMode}
+        onSetCameraMode={handleSetCameraMode}
         onResetAllRecords={handleResetAllRecords}
         onSelectStartLevel={handleSelectStartLevel}
       />

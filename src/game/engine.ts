@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { GameState, GameStats, ObstacleData, CrashInfo, TotemType } from '../types';
+import { GameState, GameStats, ObstacleData, CrashInfo, TotemType, CameraMode } from '../types';
 import { flightPath, PathFrame, LEVEL_LENGTH, LATERAL_OFFSET } from './pathGenerator';
 import { BirdCharacter } from './birdModel';
 import { CinematicCameraDirector } from './cameraDirector';
@@ -36,6 +36,9 @@ export class GameEngine {
   private speedTimeRemaining: number = 0;
   private immunityTimeRemaining: number = 0;
   private statsNotifyTimer: number = 0;
+
+  // Camera perspective mode
+  private cameraMode: CameraMode = 'THIRD_PERSON';
 
   // Breakthrough juice & uncharted flight state
   private timeScale: number = 1.0;
@@ -312,7 +315,15 @@ export class GameEngine {
     m.makeBasis(basisRight, basisUp, forwardDir);
     this.bird.group.quaternion.setFromRotationMatrix(m);
 
-    this.cameraDirector.reset(birdPos, frame, this.startDistance);
+    this.cameraDirector.reset(
+      birdPos,
+      frame,
+      this.startDistance,
+      this.bird.group.quaternion,
+      this.environment?.obstacles,
+      this.activeBranch
+    );
+    this.bird.setFirstPerson(this.cameraMode === 'FIRST_PERSON');
     this.environment.updateTerrain(this.startDistance, true, 0.016, this.startX);
 
     this.callbacks.onStateChange('READY');
@@ -392,6 +403,25 @@ export class GameEngine {
     return !current;
   }
 
+  public setCameraMode(mode: CameraMode) {
+    this.cameraMode = mode;
+    const isFP = mode === 'FIRST_PERSON';
+    this.cameraDirector.setFirstPerson(isFP);
+    this.bird.setFirstPerson(isFP);
+    this.callbacks.onCameraChange?.(this.cameraDirector.getCurrentShotName());
+    this.notifyStats();
+  }
+
+  public getCameraMode(): CameraMode {
+    return this.cameraMode;
+  }
+
+  public toggleCameraMode(): CameraMode {
+    const nextMode: CameraMode = this.cameraMode === 'FIRST_PERSON' ? 'THIRD_PERSON' : 'FIRST_PERSON';
+    this.setCameraMode(nextMode);
+    return nextMode;
+  }
+
   public cycleCameraShot() {
     this.cameraDirector.cycleNextShot();
   }
@@ -436,6 +466,7 @@ export class GameEngine {
       birdPosition,
       startLevel: this.startLevel,
       startCol: this.startCol,
+      cameraMode: this.cameraMode,
     });
   }
 
@@ -614,11 +645,12 @@ export class GameEngine {
         delta,
         birdPos,
         frame,
-        this.startDistance,
-        true,
         0,
+        true,
+        this.startDistance,
         this.environment.obstacles,
-        this.activeBranch
+        this.activeBranch,
+        this.bird.group.quaternion
       );
       this.environment.updateTerrain(this.startDistance, false, delta, this.startX);
       if (this.environment?.featherManager) {
@@ -836,7 +868,8 @@ export class GameEngine {
         true,
         this.pathDistance,
         this.environment.obstacles,
-        this.activeBranch
+        this.activeBranch,
+        this.bird.group.quaternion
       );
       this.callbacks.onCameraChange?.(this.cameraDirector.getCurrentShotName());
 
@@ -846,7 +879,9 @@ export class GameEngine {
           birdPos,
           this.cameraDirector.camera,
           this.speedTimeRemaining,
-          this.immunityTimeRemaining
+          this.immunityTimeRemaining,
+          5.0,
+          this.cameraMode === 'FIRST_PERSON'
         );
       }
 
@@ -958,7 +993,8 @@ export class GameEngine {
         false,
         this.pathDistance,
         this.environment.obstacles,
-        this.activeBranch
+        this.activeBranch,
+        this.bird.group.quaternion
       );
     }
 
