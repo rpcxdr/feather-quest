@@ -120,19 +120,29 @@ export class GameEngine {
 
     // Three.js Scene & Renderer
     this.scene = new THREE.Scene();
-    const width = container.clientWidth || window.innerWidth;
-    const height = container.clientHeight || window.innerHeight;
+    const width = Math.max(320, container.clientWidth || window.innerWidth || 800);
+    const height = Math.max(240, container.clientHeight || window.innerHeight || 600);
 
-    this.renderer = new THREE.WebGLRenderer({
-      antialias: true,
-      powerPreference: 'high-performance',
-    });
+    try {
+      this.renderer = new THREE.WebGLRenderer({
+        antialias: true,
+        powerPreference: 'default',
+      });
+    } catch {
+      this.renderer = new THREE.WebGLRenderer({
+        antialias: false,
+      });
+    }
+
     this.renderer.setSize(width, height);
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.05;
+    this.renderer.domElement.style.display = 'block';
+    this.renderer.domElement.style.width = '100%';
+    this.renderer.domElement.style.height = '100%';
     container.appendChild(this.renderer.domElement);
 
     // Camera Director
@@ -428,8 +438,8 @@ export class GameEngine {
 
   public handleResize() {
     if (!this.container || this.isDestroyed) return;
-    const width = this.container.clientWidth || window.innerWidth;
-    const height = this.container.clientHeight || window.innerHeight;
+    const width = Math.max(320, this.container.clientWidth || window.innerWidth || 800);
+    const height = Math.max(240, this.container.clientHeight || window.innerHeight || 600);
 
     this.cameraDirector.camera.aspect = width / height;
     this.cameraDirector.camera.updateProjectionMatrix();

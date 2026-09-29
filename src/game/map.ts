@@ -14,7 +14,37 @@
  * 'W' - Deeper Waters (darker water colors representing deeper hidden terrain)
  */
 
-export const rawTerrain = ``;
+export const rawTerrain = ``;`
+ssssssssssssssss
+ssssssssssssssss
+ssssssssssssssss
+ssssssssssssssss
+ssssssssssssssss
+ssssssssssssssss
+WWWWWWWWWWWwwWWW
+WWWWWWWWWWWwwWWW
+WWWWWWWWWWWwwWWW
+WWWWWWWWWWWWWWWW
+wwwwwwwwwWWWWwww
+WWWWWWWWWWwwwwww
+wwwwwWWWWWWwwwww
+wwwwwWWWWWWwwwww
+wwwwwWWWWWWwwwww
+CCCCCCCCCCCCCCCC
+CCCCCCCCCCCCCCCC
+CCCCCCCCCCCCCCCC
+CCCCCCCCCCCCCCCC
+CCCCCCCCCCCCCCCC
+CCCCCCCCCCCCCCCC
+CCCCCCCCCCCCCCCC
+CCCCCCCCCCCCCCCC
+wwwwwWWWWWWwwwww
+wwwwwWWWWWWwwwww
+wwwwwWWWWWWwwwww
+wwwwwWWWWWWwwwww
+wwwwwWWWWWWwwwww
+wwwwwWWWWWWwwwww
+`;
 
 /**
  * Initializes the biome terrain map from a multi-line ascii template literal.

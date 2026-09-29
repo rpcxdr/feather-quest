@@ -222,7 +222,7 @@ export const GameCanvas: React.FC = () => {
   return (
     <div
       id="game-viewport-container"
-      className="relative w-full h-full overflow-hidden bg-slate-950 select-none cursor-pointer"
+      className="relative flex-1 w-full h-full min-h-0 overflow-hidden bg-slate-950 select-none cursor-pointer"
       style={{ touchAction: 'none' }}
       onPointerDown={handlePointerDown}
     >

@@ -420,7 +420,7 @@ export const MapModal: React.FC<MapModalProps> = ({
     >
       <div
         id="map-modal-dialog"
-        className="relative w-full max-w-xl h-[88dvh] max-h-[740px] rounded-3xl bg-gradient-to-b from-slate-900/95 via-slate-900/90 to-slate-950/95 border border-amber-400/30 shadow-[0_20px_60px_rgba(0,0,0,0.85),0_0_40px_rgba(245,158,11,0.15)] flex flex-col overflow-hidden text-slate-100 pointer-events-auto"
+        className="relative w-full max-w-xl h-[88vh] max-h-[740px] rounded-3xl bg-gradient-to-b from-slate-900/95 via-slate-900/90 to-slate-950/95 border border-amber-400/30 shadow-[0_20px_60px_rgba(0,0,0,0.85),0_0_40px_rgba(245,158,11,0.15)] flex flex-col overflow-hidden text-slate-100 pointer-events-auto"
         onClick={(e) => e.stopPropagation()}
         onPointerDown={(e) => e.stopPropagation()}
         onPointerUp={(e) => e.stopPropagation()}

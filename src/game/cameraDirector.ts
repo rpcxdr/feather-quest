@@ -546,10 +546,9 @@ export class CinematicCameraDirector {
         this.camera.fov = THREE.MathUtils.lerp(this.camera.fov, THREE.MathUtils.clamp(targetFov, 65, 95), delta * 8.0);
         this.camera.updateProjectionMatrix();
 
-        // Responsive tracking to eliminate latency on player flap/dive while maintaining silk smoothness
-        const dampPos = 1.0 - Math.exp(-24.0 * delta);
-        this.currentPos.lerp(targetPos, dampPos);
-        this.currentLookAt.lerp(targetLook, dampPos);
+        // Lock camera rigidly to bird head/eye to eliminate position contention and vertical jitter
+        this.currentPos.copy(targetPos);
+        this.currentLookAt.copy(targetLook);
 
         // Tactile micro-shake on ring impact
         if (this.ringShakeTimer > 0) {
@@ -560,9 +559,8 @@ export class CinematicCameraDirector {
           this.currentPos.addScaledVector(up, shakeAmount * 0.35);
         }
 
-        // Aerodynamic banking roll: camera rolls to match bird's wing banking into turns
-        const dampUp = 1.0 - Math.exp(-18.0 * delta);
-        this.camera.up.lerp(up, dampUp);
+        // Camera up matches bird's aerodynamic banking orientation
+        this.camera.up.copy(up);
 
         this.camera.position.copy(this.currentPos);
         this.camera.lookAt(this.currentLookAt);

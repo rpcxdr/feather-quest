@@ -60,10 +60,11 @@ export class CloudsBiome extends Biome {
   }
 
   /**
-   * No trees in the high-altitude mountains in the clouds
+   * High elevations near mountain summits have no trees.
+   * Lower elevation foothills and valleys can feature alpine pine trees.
    */
   public override hasTrees(): boolean {
-    return false;
+    return true;
   }
 
   public getColumnGapCenterY(distance: number): number {

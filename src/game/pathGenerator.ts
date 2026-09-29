@@ -112,11 +112,8 @@ export class FlightPathGenerator {
   // --- Local Caching for Biome Weight Lookups ---
   private tileBiomeCache = new Map<string, Biome>();
   private pureBiomeWeightsCache = new Map<Biome, BiomeWeights>();
-  private biomeWeightsCache = new Map<string, BiomeWeights>();
-  private static readonly MAX_BIOME_CACHE_SIZE = 16384;
 
   public clearBiomeWeightsCache(): void {
-    this.biomeWeightsCache.clear();
     this.tileBiomeCache.clear();
     this.pureBiomeWeightsCache.clear();
   }
@@ -198,18 +195,6 @@ export class FlightPathGenerator {
 
     this.pureBiomeWeightsCache.set(biome, weights);
     return weights;
-  }
-
-  private storeInBiomeWeightsCache(key: string, weights: BiomeWeights): void {
-    if (this.biomeWeightsCache.size >= FlightPathGenerator.MAX_BIOME_CACHE_SIZE) {
-      // Prune oldest quarter of entries to keep cache performant without frequent clears
-      let toRemove = Math.floor(FlightPathGenerator.MAX_BIOME_CACHE_SIZE / 4);
-      for (const k of this.biomeWeightsCache.keys()) {
-        this.biomeWeightsCache.delete(k);
-        if (--toRemove <= 0) break;
-      }
-    }
-    this.biomeWeightsCache.set(key, weights);
   }
 
   public setStartLevel(level: number, startX: number, startCol: number = 2) {
@@ -343,18 +328,9 @@ export class FlightPathGenerator {
     this.forkDecisions.set(level, fork);
   }
 
-  // Calculate smooth biome blend weights at coordinates (x, z) using 2D smoothstep interpolation between tiles
-  // with multi-level local caching for high performance during chunk generation and level loading.
+  // Calculate smooth biome blend weights at coordinates (x, z) using continuous 2D smoothstep interpolation between tiles
+  // with cached discrete tile samples and pure single-biome fast-path for high performance and zero discretization noise.
   public getBiomeWeights(x: number, z: number): BiomeWeights {
-    // 1. Check coordinate-level local cache (using centimeter-precision key)
-    const qx = Math.round(x * 100) / 100 + 0;
-    const qz = Math.round(z * 100) / 100 + 0;
-    const cacheKey = `${qx},${qz}`;
-    const cached = this.biomeWeightsCache.get(cacheKey);
-    if (cached) {
-      return cached;
-    }
-
     const mZ = terrainMap.length;
     const mX = terrainMap[0]?.length ?? 16;
     const tileSize = TILE_SIZE; // 25.0m
@@ -382,9 +358,7 @@ export class FlightPathGenerator {
 
     // Fast-path: if all 4 bounding tiles have identical biome, weights strictly equal 1.0 for that biome
     if (b00 === b10 && b00 === b01 && b00 === b11) {
-      const pureWeights = this.getPureBiomeWeights(b00);
-      this.storeInBiomeWeightsCache(cacheKey, pureWeights);
-      return pureWeights;
+      return this.getPureBiomeWeights(b00);
     }
 
     // Fractional offset within cell [0, 1)
@@ -466,7 +440,7 @@ export class FlightPathGenerator {
       primaryBiome = hills >= hillsLow ? (bH || bh!) : (bh || bH!);
     }
 
-    const computedWeights: BiomeWeights = {
+    return {
       hills,
       hillsLow,
       mountain,
@@ -480,9 +454,6 @@ export class FlightPathGenerator {
       primaryBiome,
       biomeWeights: biomeWeightsMap,
     };
-
-    this.storeInBiomeWeightsCache(cacheKey, computedWeights);
-    return computedWeights;
   }
 
   /**
@@ -890,7 +861,7 @@ export class FlightPathGenerator {
     lateralOffset: number = 0,
     target = new THREE.Vector3()
   ): THREE.Vector3 {
-    const eps = 0.01;
+    const eps = 0.1; // Central difference over 20cm window for clean, smooth C^1 continuity
     const pPrev = this.getPoint(z - eps, branchOrOffset, lateralOffset);
     const pNext = this.getPoint(z + eps, branchOrOffset, lateralOffset);
     target.subVectors(pNext, pPrev).multiplyScalar(1.0 / (2.0 * eps));
@@ -904,7 +875,7 @@ export class FlightPathGenerator {
     lateralOffset: number = 0,
     target = new THREE.Vector3()
   ): THREE.Vector3 {
-    const eps = 0.01;
+    const eps = 0.1; // Central second difference over 20cm window for stable curvature
     const p0 = this.getPoint(z, branchOrOffset, lateralOffset);
     const pPrev = this.getPoint(z - eps, branchOrOffset, lateralOffset);
     const pNext = this.getPoint(z + eps, branchOrOffset, lateralOffset);
@@ -1091,7 +1062,24 @@ export class FlightPathGenerator {
   public getNaturalTerrainHeight(x: number, z: number, weights: BiomeWeights): number {
     let natural = 0;
     const rawCenter = this.getRawCenterPoint(z);
-    const context = { rawCenterX: rawCenter.x, rawCenterY: rawCenter.y };
+
+    // Resolve nearest active corridor branch at (x, z) so canyon gorges and rivers strictly follow active flight paths
+    const branches = this.getActiveBranchesAt(z);
+    let rawCenterX = rawCenter.x;
+    let rawCenterY = rawCenter.y;
+    if (branches && branches.length > 0) {
+      let minPerp = Infinity;
+      for (let i = 0; i < branches.length; i++) {
+        const b = branches[i];
+        const d = Math.abs(x - b.point.x);
+        if (d < minPerp) {
+          minPerp = d;
+          rawCenterX = b.point.x;
+          rawCenterY = b.point.y;
+        }
+      }
+    }
+    const context = { rawCenterX, rawCenterY };
 
     if (weights.biomeWeights) {
       for (const [biome, w] of weights.biomeWeights.entries()) {
@@ -1121,6 +1109,24 @@ export class FlightPathGenerator {
       if ((weights.waterShallow || 0) > 0.001 && bw) natural += weights.waterShallow! * bw.getNaturalTerrainHeight(x, z, context);
     }
 
+    // Deep canyon valley incision:
+    // When canyon biome is present, carve the deep slot canyon gorge and riverbed through the terrain
+    const canyonWeight = (weights.canyon || 0) + (weights.canyonLow || 0);
+    if (canyonWeight > 0.15) {
+      const bC = biomeRegistry.getByChar('C');
+      const bc = biomeRegistry.getByChar('c');
+      const canyonBiome = (weights.canyon || 0) >= (weights.canyonLow || 0) ? bC : bc;
+      if (canyonBiome) {
+        const canyonH = canyonBiome.getNaturalTerrainHeight(x, z, context);
+        const dx = Math.abs(x - rawCenterX);
+        if (dx <= 10.5) {
+          const gorgeT = THREE.MathUtils.clamp((10.5 - dx) / 4.5, 0, 1);
+          const cutDepth = THREE.MathUtils.clamp(canyonWeight * 1.5, 0, 1) * gorgeT;
+          natural = THREE.MathUtils.lerp(natural, Math.min(natural, canyonH), cutDepth);
+        }
+      }
+    }
+
     return natural;
   }
 
@@ -1140,8 +1146,9 @@ export class FlightPathGenerator {
     const naturalHeight = this.getNaturalTerrainHeight(x, z, weights);
 
     // Corridor geometry parameters
-    const rFloor = 7.0;  // Flat corridor floor width (m)
-    const rWall = 22.0;  // Transition width from corridor floor up to natural terrain (m)
+    const canyonWeight = (weights.canyon || 0) + (weights.canyonLow || 0);
+    const rFloor = THREE.MathUtils.lerp(7.0, 4.5, canyonWeight);  // Flat corridor floor width (m)
+    const rWall = THREE.MathUtils.lerp(22.0, 11.0, canyonWeight);  // Transition width from corridor floor up to natural terrain (m)
 
     const gapBottomRelY = this.getColumnGapBottomRelY(z);
 

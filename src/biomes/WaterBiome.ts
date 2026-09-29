@@ -159,10 +159,19 @@ export class WaterBiome extends Biome {
    * Tropical Ocean Atmosphere
    */
   public getAtmosphereColors(): AtmosphereColors {
+    if (this.char === 'W') {
+      // Deep maritime ocean: unified azure horizon so the water sheet blends seamlessly into the sky
+      return {
+        sky: new THREE.Color(0x38bdf8),    // Radiant maritime sky
+        fog: new THREE.Color(0x38bdf8),    // Matching oceanic horizon fog
+        ground: new THREE.Color(0x0284c7), // Deep azure reflection
+      };
+    }
+    // Shallow waters: sunny tropical sky & matching sea haze
     return {
-      sky: new THREE.Color(0x38bdf8),    // Radiant tropical sky
-      fog: new THREE.Color(0x7dd3fc),    // Soft oceanic sea haze
-      ground: new THREE.Color(0x0284c7), // Azure sea reflection
+      sky: new THREE.Color(0x56c4f8),    // Radiant sunny tropical sky
+      fog: new THREE.Color(0x56c4f8),    // Matching soft tropical sea haze
+      ground: new THREE.Color(0x0284c7), // Lagoon azure reflection
     };
   }
 

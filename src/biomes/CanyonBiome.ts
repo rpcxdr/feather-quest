@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { Biome, AtmosphereColors, CloudLightingColors, TerrainVertexColorContext, VoxelColorSpec } from './Biome';
+import { WATER_LEVEL } from './WaterBiome';
 
 /**
  * CanyonBiome
@@ -40,28 +41,36 @@ export class CanyonBiome extends Biome {
   ): number {
     const rawCenterX = context?.rawCenterX ?? 0;
     const rawCenterY = context?.rawCenterY ?? 15.0;
-    const plateauHeight = rawCenterY + 19.5;
-    const riverBedY = rawCenterY - 23.0;
-    const slotHalfWidth = 16.0;
-    const riverHalfWidth = 2.4;
-    const canyonShoulder = rawCenterY - 10.5;
+
+    // River altitude set just above sea level (WATER_LEVEL = -7.0m)
+    // allowing smooth natural transition when merging into ocean / shallow water biomes
+    const waterY = WATER_LEVEL + (this.scale === 1.0 ? 0.38 : 0.28);
+    const riverBedY = waterY - 1.2;
+
+    const riverHalfWidth = 5.0; // Narrower canyon river (~10m wide)
+    const slotHalfWidth = 10.5; // Sharp steep slot canyon gorge
+    const canyonShoulder = rawCenterY + (this.scale === 1.0 ? 4.0 : 2.5);
+    const plateauHeight = rawCenterY + (this.scale === 1.0 ? 20.0 : 14.0);
 
     const dx = Math.abs(x - rawCenterX);
     let hCanyon: number;
 
     if (dx <= riverHalfWidth) {
+      // Submerged riverbed: concave dish reaching water level exactly at dx = riverHalfWidth
       const r = dx / riverHalfWidth;
-      hCanyon = riverBedY + (r * r) * 0.6;
+      hCanyon = riverBedY + (r * r) * (waterY - riverBedY);
     } else if (dx <= slotHalfWidth) {
-      const vT = (dx - riverHalfWidth) / (slotHalfWidth - riverHalfWidth);
-      const sharpV = Math.pow(vT, 0.92);
+      // Sharp, steep canyon walls rising directly out of the water surface
+      const u = (dx - riverHalfWidth) / (slotHalfWidth - riverHalfWidth);
+      const sharpWall = Math.pow(u, 0.28);
       const rockyCrags =
-        Math.sin(vT * Math.PI * 4.0 + z * 0.04334) * 0.35 +
-        Math.cos(z * 0.01898) * 0.25;
-      hCanyon = riverBedY + 0.6 + sharpV * (canyonShoulder - (riverBedY + 0.6)) + rockyCrags;
+        Math.sin(u * Math.PI * 3.5 + z * 0.045) * 0.45 +
+        Math.cos(z * 0.019) * 0.3;
+      hCanyon = waterY + sharpWall * (canyonShoulder - waterY) + rockyCrags;
     } else {
+      // Upper mesa rim transitions up to plateau
       const wallDist = dx - slotHalfWidth;
-      const wallRatio = Math.min(1.0, wallDist / 18.0);
+      const wallRatio = Math.min(1.0, wallDist / 12.0);
       const smoothWall = wallRatio * wallRatio * (3.0 - 2.0 * wallRatio);
       const strata = smoothWall + Math.sin(smoothWall * Math.PI * 5.0) * 0.045;
       // Incommensurate mesa rim rolls across upper plateaus
@@ -70,11 +79,6 @@ export class CanyonBiome extends Biome {
           Math.cos(z * 0.03814 - x * 0.01912 + 1.1) * 1.4) *
         smoothWall;
       hCanyon = THREE.MathUtils.lerp(canyonShoulder, plateauHeight, Math.min(1.0, Math.max(0.0, strata))) + rimUndulation;
-    }
-
-    if (this.scale !== 1.0) {
-      // In low canyon ('c'), depth below plateau is scaled (e.g. 75% depth)
-      hCanyon = plateauHeight - (plateauHeight - hCanyon) * this.scale;
     }
 
     return hCanyon;
@@ -88,27 +92,19 @@ export class CanyonBiome extends Biome {
     return true;
   }
 
-  public override getRiverWaterY(activeBranchY: number): number {
-    // For 'C' (scale=1.0): riverbed is activeBranch.point.y - 23.0 => water is activeBranch.point.y - 21.8
-    // For 'c' (scale=0.75): plateau is +19.5, depth from plateau is 75% of 42.5m = 31.875m => riverbed is activeBranch.point.y - 12.375m => water is activeBranch.point.y - 11.175m
-    if (this.scale === 1.0) {
-      return activeBranchY - 21.8;
-    }
-    const plateau = activeBranchY + 19.5;
-    const fullDepth = 42.5; // (19.5 - (-23.0))
-    const scaledDepth = fullDepth * this.scale;
-    const riverbedY = plateau - scaledDepth;
-    return riverbedY + 1.2;
+  public override getRiverWaterY(_activeBranchY?: number): number {
+    // Just above sea level (-7.0m)
+    return WATER_LEVEL + (this.scale === 1.0 ? 0.38 : 0.28);
   }
 
   public getVertexColor(ctx: TerrainVertexColorContext): [number, number, number] {
     const { h, distToBranch, blockNoise } = ctx;
-    if (distToBranch < 2.5) {
+    if (distToBranch < 5.0) {
       // Submerged wet riverbed slate & dark river rock
       return [0.11, 0.22, 0.28];
-    } else if (distToBranch < 4.2) {
+    } else if (distToBranch < 6.8) {
       // Damp shoreline gravel & clay
-      const tShore = (distToBranch - 2.5) / 1.7;
+      const tShore = (distToBranch - 5.0) / 1.8;
       return [
         THREE.MathUtils.lerp(0.11, 0.48, tShore),
         THREE.MathUtils.lerp(0.22, 0.30, tShore),

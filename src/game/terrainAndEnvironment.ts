@@ -1040,13 +1040,29 @@ if (vBeachWave > 0.02) {
 
   private determineTreeVariant(
     weights: BiomeWeights,
-    _x: number,
-    _z: number
+    x: number,
+    z: number,
+    y?: number
   ): 'NONE' | 'PALM' | 'PINE' | 'SNOW_PINE' | 'HILLS' {
     const char = weights.primaryBiome?.char;
+    const isClouds =
+      char === 's' ||
+      (weights.clouds || 0) > 0.001 ||
+      weights.primary === 'HIGH_CLOUDS';
 
-    // "s" sky / clouds: no trees
-    if (char === 's' || (weights.clouds || 0) > 0.001 || weights.primary === 'HIGH_CLOUDS') {
+    const terrainY = y !== undefined ? y : flightPath.getTerrainHeight(x, z, weights);
+
+    // "s" sky terrain: remove all trees from high elevations (> 24.0m near mountain peaks / snowy summits).
+    // Lower elevation foothills and valleys (<= 24.0m) feature alpine pine trees.
+    if (isClouds) {
+      if (terrainY > 24.0) {
+        return 'NONE';
+      }
+      return terrainY > 18.0 ? 'SNOW_PINE' : 'PINE';
+    }
+
+    // High alpine peaks in rugged mountain terrain above the tree line (> 28.0m)
+    if (terrainY > 28.0 && (char === 'M' || char === 'm' || (weights.mountain || 0) > 0.25)) {
       return 'NONE';
     }
 
@@ -1080,23 +1096,28 @@ if (vBeachWave > 0.02) {
    * - "h" and "H" hills: classic deciduous oak trees
    * - "m" mountain (low): coniferous evergreen pine trees
    * - "M" mountain (high): snow-covered pine trees
-   * - "s" sky / clouds: strictly no trees
+   * - "s" sky / clouds: trees strictly removed from high elevations (> 24m)
    */
   private positionSingleTree(tree: THREE.Object3D, z: number) {
-    const pathPt = flightPath.getPoint(z);
+    const activeBranches = flightPath.getActiveBranchesAt(z);
+    let bestBranch = activeBranches[0];
+    let bestDist = Infinity;
+    const refX = this.lastBirdX !== undefined ? this.lastBirdX : this.activeBranchOffset;
+    for (const b of activeBranches) {
+      const d = Math.abs(b.point.x - refX);
+      if (d < bestDist) {
+        bestDist = d;
+        bestBranch = b;
+      }
+    }
+    const pathPt = bestBranch ? bestBranch.point : flightPath.getPoint(z);
+
     const weights = flightPath.getBiomeWeights(pathPt.x, z);
     const isRiverOrCanyon = weights.primaryBiome ? weights.primaryBiome.hasRiver() : false;
-    const isClouds =
+    const pathIsClouds =
       (weights.clouds || 0) > 0.001 ||
       weights.primary === 'HIGH_CLOUDS' ||
       weights.primaryBiome?.char === 's';
-
-    // No trees in the clouds biome ("s")
-    if (isClouds) {
-      tree.position.set(pathPt.x + 18.0, WATER_LEVEL - 50, z);
-      tree.visible = false;
-      return;
-    }
 
     const isDeepWater =
       (weights.waterDeep || 0) > 0.001 ||
@@ -1127,8 +1148,21 @@ if (vBeachWave > 0.02) {
       const spread = minOffset + Math.random() * (isShallowWater ? 44.0 : 34.0);
       const candX = pathPt.x + side * spread;
       const candWeights = flightPath.getBiomeWeights(candX, z);
-      const variant = this.determineTreeVariant(candWeights, candX, z);
+      const candY = flightPath.getTerrainHeight(candX, z, candWeights);
 
+      // In "s" sky terrain (either along corridor or at candidate location):
+      // Strictly remove all trees from high elevations (> 24.0m near mountain peaks)
+      const candIsClouds =
+        pathIsClouds ||
+        (candWeights.clouds || 0) > 0.001 ||
+        candWeights.primary === 'HIGH_CLOUDS' ||
+        candWeights.primaryBiome?.char === 's';
+
+      if (candIsClouds && candY > 24.0) {
+        continue;
+      }
+
+      const variant = this.determineTreeVariant(candWeights, candX, z, candY);
       if (variant === 'NONE') {
         continue;
       }
@@ -1143,7 +1177,6 @@ if (vBeachWave > 0.02) {
         }
       }
 
-      const candY = flightPath.getTerrainHeight(candX, z);
       const minDryHeight = variant === 'PALM' ? (WATER_LEVEL + 0.35) : (WATER_LEVEL + 0.6);
 
       // Must be safely above sea level (WATER_LEVEL) - never submerged in water!
@@ -1165,7 +1198,7 @@ if (vBeachWave > 0.02) {
       tree.position.set(bestX, bestY, z);
       tree.visible = true;
     } else {
-      // Entire basin/area is submerged beneath sea level or in treeless zone
+      // Entire basin/area is submerged beneath sea level or in treeless high elevation zone
       tree.position.set(bestX, WATER_LEVEL - 50, z);
       tree.visible = false;
     }
@@ -1344,7 +1377,8 @@ if (vBeachWave > 0.02) {
       (centerWeights.waterShallow || 0) > 0.001 ||
       centerWeights.primary === 'SHALLOW_WATERS' ||
       centerWeights.primary === 'DEEP_WATERS';
-    const chunkHasWater = (minH <= WATER_LEVEL + 0.1) || hasWaterBiome;
+    const isPureCanyon = centerWeights.primaryBiome?.hasRiver() && !hasWaterBiome;
+    const chunkHasWater = hasWaterBiome || ((minH <= WATER_LEVEL + 0.1) && !isPureCanyon);
 
     const waterIndices = chunk.waterIndices;
     let waterIndexCount = 0;
@@ -1485,8 +1519,18 @@ if (vBeachWave > 0.02) {
       const fog = this.scene.fog as THREE.Fog;
       fog.color.copy(targetFog);
       const cloudsW = birdBiome.clouds || 0;
-      fog.near = 28 - cloudsW * 6;
-      fog.far = 145 - cloudsW * 30; // 115m in clouds to clearly view mountain peaks below
+      const waterShallowW = birdBiome.waterShallow || 0;
+      const waterDeepW = birdBiome.waterDeep || 0;
+      const waterW = Math.min(1.0, waterShallowW + waterDeepW);
+
+      // Dynamic distance fog tailored per terrain:
+      // Base (Hills/Canyons/Mountains/Water): near = 28m, far = 145m
+      // In clouds ("s"): near = ~22m, far = ~115m to view mountain peaks below
+      const targetNear = Math.max(18, 28 - cloudsW * 6);
+      const targetFar = Math.max(95, 145 - cloudsW * 30);
+
+      fog.near = targetNear;
+      fog.far = targetFar;
     }
     this.hemiLight.groundColor.copy(targetGround);
 
@@ -1496,14 +1540,20 @@ if (vBeachWave > 0.02) {
     this.dirLight.target.updateMatrixWorld();
 
     // Trees are recycled behind camera directly into far distance (>165m)
-    // positioning them safely on dry land and never in water or clouds
+    // positioning them safely on dry land and never in water or at high elevations in clouds
     this.treesGroup.children.forEach((tree) => {
       if (tree.position.z < birdZ - 65) {
         const newZ = birdZ + 165 + Math.random() * 75;
         this.positionSingleTree(tree, newZ);
       } else if (tree.visible) {
         const w = flightPath.getBiomeWeights(tree.position.x, tree.position.z);
-        if ((w.clouds || 0) > 0.001 || w.primary === 'HIGH_CLOUDS' || (w.primaryBiome && !w.primaryBiome.hasTrees())) {
+        const isClouds =
+          (w.clouds || 0) > 0.001 ||
+          w.primary === 'HIGH_CLOUDS' ||
+          w.primaryBiome?.char === 's';
+        if (isClouds && tree.position.y > 24.0) {
+          tree.visible = false;
+        } else if (w.primaryBiome && !w.primaryBiome.hasTrees()) {
           tree.visible = false;
         }
       }
@@ -1544,8 +1594,12 @@ if (vBeachWave > 0.02) {
         const y = flightPath.getTerrainHeight(tree.position.x, tree.position.z);
         tree.position.y = y;
         const w = flightPath.getBiomeWeights(tree.position.x, tree.position.z);
-        const variant = this.determineTreeVariant(w, tree.position.x, tree.position.z);
-        if (variant === 'NONE') {
+        const variant = this.determineTreeVariant(w, tree.position.x, tree.position.z, y);
+        const isClouds =
+          (w.clouds || 0) > 0.001 ||
+          w.primary === 'HIGH_CLOUDS' ||
+          w.primaryBiome?.char === 's';
+        if (variant === 'NONE' || (isClouds && y > 24.0)) {
           tree.visible = false;
         } else {
           const minDryHeight = variant === 'PALM' ? (WATER_LEVEL + 0.35) : (WATER_LEVEL + 0.6);

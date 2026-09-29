@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { ConvexGeometry } from 'three/examples/jsm/geometries/ConvexGeometry.js';
 import { flightPath } from './pathGenerator';
 import { biomeRegistry, Biome } from '../biomes';
+import { WATER_LEVEL } from '../biomes/WaterBiome';
 
 interface RiverChunkData {
   group: THREE.Group;
@@ -89,8 +90,8 @@ export class CanyonRiverManager {
       this.group.add(chunkGroup);
 
       // Pre-allocate dynamic river water buffer geometry
-      const maxVertices = 600;
-      const maxIndices = 1800;
+      const maxVertices = 900;
+      const maxIndices = 2700;
       const geo = new THREE.BufferGeometry();
       const posArray = new Float32Array(maxVertices * 3);
       const uvArray = new Float32Array(maxVertices * 2);
@@ -320,7 +321,7 @@ export class CanyonRiverManager {
       weights.primary === 'DEEP_CANYON_SLOTS' ||
       weights.primaryBiome?.category === 'CANYON' ||
       (weights.primaryBiome ? weights.primaryBiome.hasRiver() : false);
-    return isCanyonBiome && totalCanyon >= 0.35;
+    return isCanyonBiome || totalCanyon >= 0.25;
   }
 
   // Populate/refresh a river chunk matching the terrain chunk's world span
@@ -338,42 +339,54 @@ export class CanyonRiverManager {
     }
     chunk.foamCollars = [];
 
-    const startBranches = flightPath.getActiveBranchesAt(startZ);
-    const midBranches = flightPath.getActiveBranchesAt(centerZ);
-    const endBranches = flightPath.getActiveBranchesAt(endZ);
+    // Collect all active branches across this chunk without in-place pointer mutation
+    const rawBranchNames: ('SINGLE' | 'LEFT' | 'RIGHT')[] = [];
+    const seen = new Set<string>();
+    const checkBranch = (b: { branch: 'SINGLE' | 'LEFT' | 'RIGHT' }) => {
+      if (!seen.has(b.branch)) {
+        seen.add(b.branch);
+        rawBranchNames.push(b.branch);
+      }
+    };
+    for (const b of flightPath.getActiveBranchesAt(startZ)) checkBranch(b);
+    for (const b of flightPath.getActiveBranchesAt(centerZ)) checkBranch(b);
+    for (const b of flightPath.getActiveBranchesAt(endZ)) checkBranch(b);
+    if (rawBranchNames.length === 0) rawBranchNames.push('SINGLE');
 
-    const numBranchesToBuild = Math.max(startBranches.length, midBranches.length, endBranches.length);
+    // If chunk contains decision fork branches ('LEFT' / 'RIGHT'),
+    // both branches smoothly trace the trunk path before the decision point and fork outward at the junction.
+    // Filtering out 'SINGLE' eliminates duplicate overlapping ribbons and eliminates gaps at the boundary.
+    const hasForkBranches = rawBranchNames.includes('LEFT') || rawBranchNames.includes('RIGHT');
+    const branchNames = hasForkBranches
+      ? rawBranchNames.filter((b) => b !== 'SINGLE')
+      : rawBranchNames;
 
     // Construct river ribbons along active branch paths
     const numZSteps = 24; // Samples along the 60m chunk (~2.5m per step)
-    const numWSteps = 4; // 5 vertices across the thin river width (4.4m wide)
-    const riverHalfWidth = 2.2;
+    const numWSteps = 5;  // 6 vertices across the river width
+    // 5.15m half-width (~10.3m wide) creates a narrower river that embeds into the canyon cliff walls (canyon half-width 5.0m)
+    const riverHalfWidth = 5.15;
 
     const positions: number[] = [];
     const uvs: number[] = [];
     const indices: number[] = [];
     let vertexOffset = 0;
 
-    for (let b = 0; b < numBranchesToBuild; b++) {
+    for (let bIdx = 0; bIdx < branchNames.length; bIdx++) {
+      const branchName = branchNames[bIdx];
       const stepInCanyon: boolean[] = [];
-      const stepBranch: (typeof startBranches[0] | null)[] = [];
+      const stepBranchPt: { x: number; y: number }[] = [];
       const stepZ: number[] = [];
 
       for (let zi = 0; zi <= numZSteps; zi++) {
         const t = zi / numZSteps;
         const currentZ = startZ + t * chunkLength;
-        const branches = flightPath.getActiveBranchesAt(currentZ);
-        if (b >= branches.length) {
-          stepInCanyon.push(false);
-          stepBranch.push(null);
-          stepZ.push(currentZ);
-          continue;
-        }
+        // getPoint(currentZ, branchName) evaluates continuous, smooth flight path coordinates across decision points
+        const pt = flightPath.getPoint(currentZ, branchName);
+        const inCanyon = this.isCanyonTerrainAt(pt.x, currentZ);
 
-        const activeBranch = branches[b];
-        const inCanyon = this.isCanyonTerrainAt(activeBranch.point.x, currentZ);
         stepInCanyon.push(inCanyon);
-        stepBranch.push(activeBranch);
+        stepBranchPt.push({ x: pt.x, y: pt.y });
         stepZ.push(currentZ);
       }
 
@@ -390,17 +403,17 @@ export class CanyonRiverManager {
         }
 
         stepVertexStart.push(vertexOffset);
-        const activeBranch = stepBranch[zi]!;
+        const branchPt = stepBranchPt[zi];
         const currentZ = stepZ[zi];
-        const weights = flightPath.getBiomeWeights(activeBranch.point.x, currentZ);
+        const weights = flightPath.getBiomeWeights(branchPt.x, currentZ);
 
-        // Compute blended water height across river biomes
+        // Compute blended water height across river biomes (just above sea level)
         let weightedWaterY = 0;
         let totalRiverWeight = 0;
         if (weights.biomeWeights) {
           for (const [biome, weight] of weights.biomeWeights.entries()) {
             if (biome.hasRiver() && weight > 0.0001) {
-              weightedWaterY += weight * biome.getRiverWaterY(activeBranch.point.y);
+              weightedWaterY += weight * biome.getRiverWaterY(branchPt.y);
               totalRiverWeight += weight;
             }
           }
@@ -408,18 +421,23 @@ export class CanyonRiverManager {
         if (totalRiverWeight > 0.0001) {
           weightedWaterY /= totalRiverWeight;
         } else {
-          weightedWaterY = activeBranch.point.y - 21.8;
+          weightedWaterY = WATER_LEVEL + 0.35;
         }
 
-        const waterY = weightedWaterY;
+        // Smooth transition into sea level when canyon meets ocean / shallow water biomes
+        const waterWeight = Math.min(1.0, (weights.waterShallow || 0) * 1.5 + (weights.waterDeep || 0) * 1.5);
+        const blendedWaterY = THREE.MathUtils.lerp(weightedWaterY, WATER_LEVEL, waterWeight);
+
+        // Strictly enforce sea level floor: river surface never renders below WATER_LEVEL
+        const waterY = Math.max(WATER_LEVEL, blendedWaterY);
 
         for (let wi = 0; wi <= numWSteps; wi++) {
           const wRatio = wi / numWSteps; // 0 to 1
           const wOffset = (wRatio - 0.5) * (riverHalfWidth * 2.0);
 
-          const vx = activeBranch.point.x + wOffset;
-          // Slight upward meniscus curvature at the riverbanks
-          const vy = waterY + Math.pow(Math.abs(wOffset) / riverHalfWidth, 2) * 0.12;
+          const vx = branchPt.x + wOffset;
+          // Slight upward meniscus curvature as river surface reaches the canyon cliff walls
+          const vy = waterY + Math.pow(Math.abs(wOffset) / riverHalfWidth, 2) * 0.08;
           const vz = currentZ;
 
           positions.push(vx, vy, vz);
@@ -430,13 +448,13 @@ export class CanyonRiverManager {
         // Add 3D Rapids Boulders and Whitewater Foam strictly in canyon rapid zones
         const cycleDist = ((currentZ % 28.0) + 28.0) % 28.0;
         if (zi % 4 === 0 && cycleDist > 8.0 && cycleDist < 19.0) {
-          // Rapid zone boulder
-          const rockOffsetX = ((Math.sin(currentZ * 1.3 + b) * 0.55) + (b === 0 ? -0.3 : 0.3)) * 1.3;
-          const rockX = activeBranch.point.x + rockOffsetX;
+          // Rapid zone boulder distributed across the narrower river
+          const rockOffsetX = ((Math.sin(currentZ * 1.3 + bIdx) * 0.55) + (bIdx === 0 ? -0.25 : 0.25)) * 1.9;
+          const rockX = branchPt.x + rockOffsetX;
           const rockZ = currentZ;
 
           // Pick geometry and material deterministically based on location
-          const rockSeed = Math.abs(Math.sin(currentZ * 12.9898 + b * 78.233));
+          const rockSeed = Math.abs(Math.sin(currentZ * 12.9898 + bIdx * 78.233));
           const geoIndex = Math.floor(rockSeed * this.boulderGeos.length) % this.boulderGeos.length;
           const matIndex = Math.floor(rockSeed * 3.7) % this.boulderMaterials.length;
 
@@ -449,12 +467,12 @@ export class CanyonRiverManager {
           const scaleZ = 0.75 + Math.abs(Math.sin(currentZ * 0.4)) * 0.45;
           rock.scale.set(scaleX, scaleY, scaleZ);
 
-          // Sits slightly submerged in the riverbed with rocky crest emerging into spray
+          // Sits in the riverbed with rocky crest emerging into spray
           const rockY = waterY + scaleY * 0.35;
           rock.position.set(rockX, rockY, rockZ);
 
           // Natural rock orientation: yaw rotated freely, pitch/roll subtly tilted
-          const yaw = (currentZ * 1.7 + b * 2.3) % (Math.PI * 2);
+          const yaw = (currentZ * 1.7 + bIdx * 2.3) % (Math.PI * 2);
           const pitch = Math.sin(currentZ * 0.6) * 0.22;
           const roll = Math.cos(currentZ * 0.8) * 0.18;
           rock.rotation.set(pitch, yaw, roll);
