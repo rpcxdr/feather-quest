@@ -49,9 +49,11 @@ export const GameCanvas: React.FC = () => {
   });
 
   const lastActionTimeRef = useRef<number>(0);
+  const ignoreFlyUntilRef = useRef<number>(0);
 
   const handleFlap = useCallback(() => {
     const now = performance.now();
+    if (now < ignoreFlyUntilRef.current) return;
     if (now - lastActionTimeRef.current < 60) return; // Prevent double-trigger from pointerdown + click
     lastActionTimeRef.current = now;
 
@@ -62,12 +64,15 @@ export const GameCanvas: React.FC = () => {
 
   const handleRestart = useCallback(() => {
     if (!engineRef.current) return;
-    // Ignore restart attempts within 0.5s of death so player can see crash and final score
+    // Debounce to ensure player's dying tap doesn't immediately dismiss
     if (!engineRef.current.canRestartAfterDeath()) return;
 
     const now = performance.now();
     if (now - lastActionTimeRef.current < 60) return;
     lastActionTimeRef.current = now;
+
+    // Guard against mobile synthetic click immediately launching flight on newly rendered Fly button
+    ignoreFlyUntilRef.current = now + 450;
 
     engineRef.current.resetGame();
   }, []);
@@ -152,6 +157,7 @@ export const GameCanvas: React.FC = () => {
 
         if (currentEngine.getState() === 'GAMEOVER') {
           if (!currentEngine.canRestartAfterDeath()) return;
+          ignoreFlyUntilRef.current = performance.now() + 450;
           currentEngine.resetGame();
         } else {
           currentEngine.flap();
@@ -213,6 +219,8 @@ export const GameCanvas: React.FC = () => {
 
     if (currentEngine.getState() === 'GAMEOVER') {
       if (!currentEngine.canRestartAfterDeath()) return;
+      // Prevent synthetic click from firing on mobile when returning to READY state
+      e.preventDefault();
       handleRestart();
     } else {
       handleFlap();

@@ -24,6 +24,49 @@ export class CanyonRiverManager {
   private riverChunks: RiverChunkData[] = [];
   private readonly numChunks: number = 5;
   private animTime: number = 0;
+  private arcLengthCache: Map<string, { z: number; s: number }[]> = new Map();
+
+  /**
+   * Evaluates continuous cumulative distance (arc length) along the curving river centerline.
+   * This ensures UV texture coordinates follow the exact curving trajectory of the river and flight path.
+   */
+  public getRiverArcLength(z: number, branch: 'SINGLE' | 'LEFT' | 'RIGHT'): number {
+    if (z <= 0) return z;
+    let list = this.arcLengthCache.get(branch);
+    if (!list) {
+      list = [{ z: 0, s: 0 }];
+      this.arcLengthCache.set(branch, list);
+    }
+
+    const step = 1.0;
+    let last = list[list.length - 1];
+
+    while (last.z < z) {
+      const nextZ = Math.min(z, last.z + step);
+      const pA = flightPath.getPoint(last.z, branch);
+      const pB = flightPath.getPoint(nextZ, branch);
+      const ds = Math.hypot(pB.x - pA.x, nextZ - last.z);
+      last = { z: nextZ, s: last.s + ds };
+      list.push(last);
+    }
+
+    // Binary search to find segment for z
+    let low = 0;
+    let high = list.length - 1;
+    while (low <= high) {
+      const mid = (low + high) >> 1;
+      if (list[mid].z <= z) low = mid + 1;
+      else high = mid - 1;
+    }
+    const idx = Math.max(0, high);
+    const a = list[idx];
+    if (!a) return z;
+    if (Math.abs(a.z - z) < 0.001) return a.s;
+    const b = list[idx + 1];
+    if (!b) return a.s;
+    const frac = (z - a.z) / (b.z - a.z);
+    return a.s + frac * (b.s - a.s);
+  }
 
   constructor(scene: THREE.Scene) {
     this.group = new THREE.Group();
@@ -364,8 +407,8 @@ export class CanyonRiverManager {
     // Construct river ribbons along active branch paths
     const numZSteps = 24; // Samples along the 60m chunk (~2.5m per step)
     const numWSteps = 5;  // 6 vertices across the river width
-    // 5.15m half-width (~10.3m wide) creates a narrower river that embeds into the canyon cliff walls (canyon half-width 5.0m)
-    const riverHalfWidth = 5.15;
+    // 2.95m half-width (~5.9m wide) embeds seamlessly into the sharp V canyon bottom notch (canyon river notch 2.8m)
+    const riverHalfWidth = 2.95;
 
     const positions: number[] = [];
     const uvs: number[] = [];
@@ -377,6 +420,8 @@ export class CanyonRiverManager {
       const stepInCanyon: boolean[] = [];
       const stepBranchPt: { x: number; y: number }[] = [];
       const stepZ: number[] = [];
+      const stepTan: { x: number; z: number }[] = [];
+      const stepNorm: { x: number; z: number }[] = [];
 
       for (let zi = 0; zi <= numZSteps; zi++) {
         const t = zi / numZSteps;
@@ -385,9 +430,20 @@ export class CanyonRiverManager {
         const pt = flightPath.getPoint(currentZ, branchName);
         const inCanyon = this.isCanyonTerrainAt(pt.x, currentZ);
 
+        // Derivative along the flight path / river in X-Z horizontal plane
+        const deriv = flightPath.getDerivative(currentZ, branchName);
+        const hLen = Math.hypot(deriv.x, 1.0);
+        const tanX = deriv.x / hLen;
+        const tanZ = 1.0 / hLen;
+        // Perpendicular horizontal normal (pointing to the right of travel in X-Z)
+        const normX = tanZ;
+        const normZ = -tanX;
+
         stepInCanyon.push(inCanyon);
         stepBranchPt.push({ x: pt.x, y: pt.y });
         stepZ.push(currentZ);
+        stepTan.push({ x: tanX, z: tanZ });
+        stepNorm.push({ x: normX, z: normZ });
       }
 
       const stepVertexStart: number[] = [];
@@ -405,6 +461,9 @@ export class CanyonRiverManager {
         stepVertexStart.push(vertexOffset);
         const branchPt = stepBranchPt[zi];
         const currentZ = stepZ[zi];
+        const norm = stepNorm[zi];
+        const tan = stepTan[zi];
+        const arcLength = this.getRiverArcLength(currentZ, branchName);
         const weights = flightPath.getBiomeWeights(branchPt.x, currentZ);
 
         // Compute blended water height across river biomes (just above sea level)
@@ -435,23 +494,25 @@ export class CanyonRiverManager {
           const wRatio = wi / numWSteps; // 0 to 1
           const wOffset = (wRatio - 0.5) * (riverHalfWidth * 2.0);
 
-          const vx = branchPt.x + wOffset;
+          // Position vertex perpendicular to the curving river/flight path direction
+          const vx = branchPt.x + norm.x * wOffset;
           // Slight upward meniscus curvature as river surface reaches the canyon cliff walls
           const vy = waterY + Math.pow(Math.abs(wOffset) / riverHalfWidth, 2) * 0.08;
-          const vz = currentZ;
+          const vz = currentZ + norm.z * wOffset;
 
           positions.push(vx, vy, vz);
-          uvs.push(wRatio, currentZ * 0.08);
+          // Texture coordinates follow continuous arc length along curving river trajectory
+          uvs.push(wRatio, arcLength * 0.08);
           vertexOffset++;
         }
 
         // Add 3D Rapids Boulders and Whitewater Foam strictly in canyon rapid zones
         const cycleDist = ((currentZ % 28.0) + 28.0) % 28.0;
         if (zi % 4 === 0 && cycleDist > 8.0 && cycleDist < 19.0) {
-          // Rapid zone boulder distributed across the narrower river
-          const rockOffsetX = ((Math.sin(currentZ * 1.3 + bIdx) * 0.55) + (bIdx === 0 ? -0.25 : 0.25)) * 1.9;
-          const rockX = branchPt.x + rockOffsetX;
-          const rockZ = currentZ;
+          // Rapid zone boulder distributed across the narrower river perpendicular to flow
+          const rockOffset = ((Math.sin(currentZ * 1.3 + bIdx) * 0.55) + (bIdx === 0 ? -0.25 : 0.25)) * 1.1;
+          const rockX = branchPt.x + norm.x * rockOffset;
+          const rockZ = currentZ + norm.z * rockOffset;
 
           // Pick geometry and material deterministically based on location
           const rockSeed = Math.abs(Math.sin(currentZ * 12.9898 + bIdx * 78.233));
@@ -471,10 +532,11 @@ export class CanyonRiverManager {
           const rockY = waterY + scaleY * 0.35;
           rock.position.set(rockX, rockY, rockZ);
 
-          // Natural rock orientation: yaw rotated freely, pitch/roll subtly tilted
-          const yaw = (currentZ * 1.7 + bIdx * 2.3) % (Math.PI * 2);
-          const pitch = Math.sin(currentZ * 0.6) * 0.22;
-          const roll = Math.cos(currentZ * 0.8) * 0.18;
+          // Natural rock orientation aligned with river flow yaw
+          const riverYaw = Math.atan2(tan.x, tan.z);
+          const yaw = riverYaw + (currentZ * 1.7 + bIdx * 2.3) % 0.8 - 0.4;
+          const pitch = Math.sin(currentZ * 0.6) * 0.15;
+          const roll = Math.cos(currentZ * 0.8) * 0.15;
           rock.rotation.set(pitch, yaw, roll);
           rock.castShadow = true;
           chunk.bouldersGroup.add(rock);
@@ -482,6 +544,7 @@ export class CanyonRiverManager {
           // Foaming whitewater crest collar around boulder
           const foam = new THREE.Mesh(this.foamGeo, this.foamMaterial);
           foam.position.set(rockX, waterY + 0.06, rockZ);
+          foam.rotation.set(0, riverYaw, 0);
           chunk.bouldersGroup.add(foam);
           chunk.foamCollars.push(foam);
         }
@@ -548,8 +611,8 @@ export class CanyonRiverManager {
   public update(delta: number) {
     this.animTime += delta;
 
-    // Continuous downstream water & rapids rush (traveling away from the bird)
-    this.riverTexture.offset.y -= delta * 1.5;
+    // Continuous downstream water & rapids rush following the curving river trajectory
+    this.riverTexture.offset.y = (this.riverTexture.offset.y - delta * 1.5) % 1.0;
 
     // Whitewater foam collars churning oscillation around rapids boulders
     const pulse = 1.0 + Math.sin(this.animTime * 9.5) * 0.12;
@@ -566,6 +629,7 @@ export class CanyonRiverManager {
 
   // Reset all chunks around bird start position
   public reset(startZ: number, chunkLength: number) {
+    this.arcLengthCache.clear();
     for (let i = 0; i < this.numChunks; i++) {
       const centerZ = startZ + i * chunkLength;
       this.populateRiverChunk(i, centerZ, chunkLength);

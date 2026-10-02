@@ -153,6 +153,12 @@ export class CloudSystem {
   private wispMaterial: THREE.SpriteMaterial;
   private cirrusMaterial: THREE.SpriteMaterial;
 
+  // Dedicated materials for "s" sky terrain heavy corridor clouds (for smooth altitude-triggered fading)
+  private heavyBaseMaterial: THREE.SpriteMaterial;
+  private heavyCoreMaterial: THREE.SpriteMaterial;
+  private heavyCrestMaterial: THREE.SpriteMaterial;
+  private heavyWispMaterial: THREE.SpriteMaterial;
+
   private animTime: number = 0;
 
   constructor() {
@@ -205,6 +211,11 @@ export class CloudSystem {
       depthWrite: false,
       fog: true,
     });
+
+    this.heavyBaseMaterial = this.baseMaterial.clone();
+    this.heavyCoreMaterial = this.coreMaterial.clone();
+    this.heavyCrestMaterial = this.crestMaterial.clone();
+    this.heavyWispMaterial = this.wispMaterial.clone();
 
     this.initClouds();
   }
@@ -365,7 +376,7 @@ export class CloudSystem {
     // 1. Flat Base Puffs (5-7 puffs along condensation plane)
     const baseCount = 5 + Math.floor(rng.next() * 3);
     for (let b = 0; b < baseCount; b++) {
-      const sprite = new THREE.Sprite(this.baseMaterial);
+      const sprite = new THREE.Sprite(this.heavyBaseMaterial);
       const bx = ((b / (baseCount - 1 || 1)) - 0.5) * widthSpread * 0.85 + (rng.next() - 0.5) * 4 + biasX;
       const bz = (rng.next() - 0.5) * depthSpread * 0.7;
       const by = (rng.next() - 0.5) * 1.2 + biasY;
@@ -388,7 +399,7 @@ export class CloudSystem {
     // 2. Heavy Volumetric Core Puffs (7-10 dense overlapping puffs)
     const coreCount = 7 + Math.floor(rng.next() * 4);
     for (let c = 0; c < coreCount; c++) {
-      const sprite = new THREE.Sprite(this.coreMaterial);
+      const sprite = new THREE.Sprite(this.heavyCoreMaterial);
       const cx = (rng.next() - 0.5) * widthSpread * 0.7 + biasX;
       const cz = (rng.next() - 0.5) * depthSpread * 0.7;
       const cy = (2.0 + rng.next() * 3.2) * clusterScale + biasY;
@@ -411,7 +422,7 @@ export class CloudSystem {
     // 3. Cauliflower Crest Billows (5-7 puffs)
     const crestCount = 5 + Math.floor(rng.next() * 3);
     for (let cr = 0; cr < crestCount; cr++) {
-      const sprite = new THREE.Sprite(this.crestMaterial);
+      const sprite = new THREE.Sprite(this.heavyCrestMaterial);
       const crx = (rng.next() - 0.5) * widthSpread * 0.5 + biasX;
       const crz = (rng.next() - 0.5) * depthSpread * 0.5;
       const cry = (4.5 + rng.next() * 4.0) * clusterScale + biasY;
@@ -434,7 +445,7 @@ export class CloudSystem {
     // 4. Wisps (3-5 feathered vapor margins)
     const wispCount = 3 + Math.floor(rng.next() * 3);
     for (let w = 0; w < wispCount; w++) {
-      const sprite = new THREE.Sprite(this.wispMaterial);
+      const sprite = new THREE.Sprite(this.heavyWispMaterial);
       const wx = (rng.next() > 0.5 ? 1 : -1) * (widthSpread * 0.5 + rng.next() * 5) + biasX;
       const wz = (rng.next() - 0.5) * depthSpread;
       const wy = (1.5 + rng.next() * 4.0) * clusterScale + biasY;
@@ -678,7 +689,8 @@ export class CloudSystem {
     birdZ: number,
     biomeWeights?: BiomeWeights,
     birdX: number = 0,
-    flightPathGen?: FlightPathGenerator
+    flightPathGen?: FlightPathGenerator,
+    birdY?: number
   ) {
     this.animTime += delta;
     const pathGen = flightPathGen || flightPath;
@@ -739,6 +751,10 @@ export class CloudSystem {
       this.baseMaterial.color.setRGB(baseR, baseG, baseB);
       this.coreMaterial.color.setRGB(coreR, coreG, coreB);
       this.crestMaterial.color.setRGB(crestR, crestG, crestB);
+
+      this.heavyBaseMaterial.color.setRGB(baseR, baseG, baseB);
+      this.heavyCoreMaterial.color.setRGB(coreR, coreG, coreB);
+      this.heavyCrestMaterial.color.setRGB(crestR, crestG, crestB);
     }
 
     // 2. Ambient Cloud Drift, Horizon Recycling & Corridor Clearance
@@ -788,10 +804,30 @@ export class CloudSystem {
 
     // 3. Heavy Corridor Cloud Formations in Sky / Clouds Biome ("s")
     // Flanks the flight corridor without ever obscuring upcoming columns
+    // Don't fade in too soon: only fade in once the bird has reached the specified altitude
+    // for this terrain (around the mountain peaks, >= 38m up to ~48m).
     const cloudsW = biomeWeights?.clouds ?? 0;
-    const lookaheadClouds = pathGen ? (pathGen.getBiomeWeights(birdX, birdZ + 60).clouds ?? 0) * 0.8 : 0;
-    const effectiveCloudsW = Math.max(cloudsW, lookaheadClouds);
-    const isCloudsActive = effectiveCloudsW > 0.001;
+    const minFadeAltitude = 38.0; // Summit level of the mountain peaks below (~38-42m)
+    const fullFadeAltitude = 48.0; // Specified sky terrain flight altitude (~50-55m)
+    const currentBirdY = birdY !== undefined ? birdY : (pathGen ? pathGen.getPathPoint(birdZ).y : 0);
+
+    const altitudeFactor = THREE.MathUtils.clamp(
+      (currentBirdY - minFadeAltitude) / (fullFadeAltitude - minFadeAltitude),
+      0.0,
+      1.0
+    );
+    const smoothAltitude = altitudeFactor * altitudeFactor * (3.0 - 2.0 * altitudeFactor);
+
+    // Only fade in once bird reaches the specified altitude around the mountain peaks
+    const effectiveCloudsFactor = cloudsW * smoothAltitude;
+    const isCloudsActive = effectiveCloudsFactor > 0.005;
+
+    // Smoothly fade opacity of heavy sky clouds
+    const fade = Math.min(1.0, effectiveCloudsFactor);
+    this.heavyBaseMaterial.opacity = 0.88 * fade;
+    this.heavyCoreMaterial.opacity = 0.92 * fade;
+    this.heavyCrestMaterial.opacity = 0.95 * fade;
+    this.heavyWispMaterial.opacity = 0.45 * fade;
 
     for (let i = 0; i < this.heavyCorridorClusters.length; i++) {
       const cluster = this.heavyCorridorClusters[i];
@@ -800,7 +836,7 @@ export class CloudSystem {
         continue;
       }
       cluster.group.visible = true;
-      const targetScale = Math.min(1.0, effectiveCloudsW * 1.35);
+      const targetScale = Math.min(1.0, 0.4 + effectiveCloudsFactor * 0.6);
       cluster.group.scale.set(targetScale, targetScale, targetScale);
 
       const pos = cluster.group.position;
@@ -849,5 +885,9 @@ export class CloudSystem {
     this.crestMaterial.dispose();
     this.wispMaterial.dispose();
     this.cirrusMaterial.dispose();
+    this.heavyBaseMaterial.dispose();
+    this.heavyCoreMaterial.dispose();
+    this.heavyCrestMaterial.dispose();
+    this.heavyWispMaterial.dispose();
   }
 }

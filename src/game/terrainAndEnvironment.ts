@@ -343,6 +343,13 @@ export class EnvironmentManager {
     this.totemManager = totemManager;
   }
 
+  // Camera reference to follow for loaded terrain tile elements
+  private camera: THREE.Camera | null = null;
+
+  public setCamera(camera: THREE.Camera) {
+    this.camera = camera;
+  }
+
   // Atmospheric lighting
   private hemiLight: THREE.HemisphereLight;
   private dirLight: THREE.DirectionalLight;
@@ -1076,6 +1083,11 @@ if (vBeachWave > 0.02) {
       return 'PALM';
     }
 
+    // Canyon terrain: arid pinyon pines on flat mesa tops
+    if (char === 'C' || char === 'c' || (weights.canyon || 0) > 0.2 || (weights.canyonLow || 0) > 0.2 || weights.primaryBiome?.category === 'CANYON') {
+      return 'PINE';
+    }
+
     // "m" rugged mountain (low): pine trees
     if (char === 'm' || ((weights.mountainLow || 0) > 0.3 && (weights.mountainLow || 0) >= (weights.mountain || 0))) {
       return 'PINE';
@@ -1149,6 +1161,29 @@ if (vBeachWave > 0.02) {
       const candX = pathPt.x + side * spread;
       const candWeights = flightPath.getBiomeWeights(candX, z);
       const candY = flightPath.getTerrainHeight(candX, z, candWeights);
+
+      // (1) Don't put trees on steep canyon slopes
+      const isCanyon =
+        (candWeights.canyon || 0) + (candWeights.canyonLow || 0) > 0.05 ||
+        candWeights.primaryBiome?.category === 'CANYON';
+
+      if (isCanyon) {
+        // Measure terrain gradient (slope) at candidate location
+        const step = 0.6;
+        const yX1 = flightPath.getTerrainHeight(candX + step, z, candWeights);
+        const yX0 = flightPath.getTerrainHeight(candX - step, z, candWeights);
+        const yZ1 = flightPath.getTerrainHeight(candX, z + step, candWeights);
+        const yZ0 = flightPath.getTerrainHeight(candX, z - step, candWeights);
+        const slopeX = (yX1 - yX0) / (2 * step);
+        const slopeZ = (yZ1 - yZ0) / (2 * step);
+        const slope = Math.sqrt(slopeX * slopeX + slopeZ * slopeZ);
+
+        // Canyon slopes and cliff walls have high gradients (slope > 0.28).
+        // Mesa tops and valley floors are flat (slope <= 0.28).
+        if (slope > 0.28) {
+          continue; // Strictly reject placing trees on steep canyon slopes/cliffs
+        }
+      }
 
       // In "s" sky terrain (either along corridor or at candidate location):
       // Strictly remove all trees from high elevations (> 24.0m near mountain peaks)
@@ -1232,10 +1267,14 @@ if (vBeachWave > 0.02) {
     return ((n % m) + m) % m;
   }
 
-  public resetChunks(startZ: number, startX: number = 0) {
-    const centerGridX = Math.round(startX / this.chunkWidth);
+  public resetChunks(startZ: number, startX: number = 0, cameraX?: number, cameraZ?: number) {
+    const camX = cameraX ?? this.camera?.position.x ?? startX;
+    const camZ = cameraZ ?? this.camera?.position.z ?? startZ;
+
+    const centerGridX = Math.round(camX / this.chunkWidth);
     const minGridX = centerGridX - 2;
-    const minGridZ = Math.floor((startZ - 45.0) / this.chunkLength);
+    const centerGridZ = Math.round(camZ / this.chunkLength);
+    const minGridZ = centerGridZ - 2;
 
     for (let ix = 0; ix < this.numChunksX; ix++) {
       const gx = minGridX + ix;
@@ -1457,10 +1496,31 @@ if (vBeachWave > 0.02) {
     chunk.waterMesh.visible = waterIndexCount > 0;
   }
 
-  public updateTerrain(birdZ: number, force: boolean = false, delta: number = 0.016, birdX?: number) {
+  public updateTerrain(
+    birdZ: number,
+    force: boolean = false,
+    delta: number = 0.016,
+    birdX?: number,
+    birdY?: number,
+    cameraX?: number,
+    cameraZ?: number
+  ) {
     this.lastBirdZ = birdZ;
     const targetBirdX = (birdX !== undefined) ? birdX : (flightPath.getPoint(birdZ)?.x ?? 0);
     this.lastBirdX = targetBirdX;
+
+    // Follow the (x, z) position of the camera for loaded terrain tile elements
+    const camX = cameraX ?? this.camera?.position.x ?? targetBirdX;
+    const camZ = cameraZ ?? this.camera?.position.z ?? birdZ;
+
+    let camDirZ = 1.0;
+    if (this.camera) {
+      const dir = new THREE.Vector3();
+      this.camera.getWorldDirection(dir);
+      if (dir.lengthSq() > 0.01) {
+        camDirZ = dir.z;
+      }
+    }
 
     // Advance water shader time uniform for beach waves & rhythmic shoreline surf
     this.waterTime += delta;
@@ -1468,12 +1528,28 @@ if (vBeachWave > 0.02) {
       this.waterMaterial.userData.shader.uniforms.uTime.value = this.waterTime;
     }
 
+    // Spin signature rings across all active obstacle columns
+    for (const obs of this.obstacles) {
+      if (obs.ringMesh) {
+        obs.ringMesh.rotation.y += delta * 2.8;
+      }
+    }
+
+    // Continuous downstream water flow & whitewater rapids churning in the canyon river
+    this.canyonRiver.update(delta);
+
+    // Continuous ocean swell drift across water surfaces
+    if (this.waterTexture) {
+      this.waterTexture.offset.x += delta * 0.015;
+      this.waterTexture.offset.y += delta * 0.025;
+    }
+
     // =======================================================
     // DYNAMIC ATMOSPHERE, SKY & FOG ACCORDING TO ACTIVE BIOME
     // (Lightweight scalar interpolation - smooth every frame)
     // =======================================================
-    const birdBiome = flightPath.getBiomeWeights(targetBirdX, birdZ);
-    this.cloudSystem.update(delta, birdZ, birdBiome, targetBirdX, flightPath);
+    const birdBiome = flightPath.getBiomeWeights(camX, camZ);
+    this.cloudSystem.update(delta, camZ, birdBiome, camX, flightPath, birdY);
     const targetSky = new THREE.Color();
     const targetFog = new THREE.Color();
     const targetGround = new THREE.Color();
@@ -1519,31 +1595,41 @@ if (vBeachWave > 0.02) {
       const fog = this.scene.fog as THREE.Fog;
       fog.color.copy(targetFog);
       const cloudsW = birdBiome.clouds || 0;
-      const waterShallowW = birdBiome.waterShallow || 0;
-      const waterDeepW = birdBiome.waterDeep || 0;
-      const waterW = Math.min(1.0, waterShallowW + waterDeepW);
+      const currentY = birdY !== undefined ? birdY : flightPath.getPathPoint(camZ).y;
+      const altitudeFactor = THREE.MathUtils.clamp((currentY - 38.0) / (48.0 - 38.0), 0.0, 1.0);
+      const effectiveCloudsW = cloudsW * (altitudeFactor * altitudeFactor * (3.0 - 2.0 * altitudeFactor));
 
       // Dynamic distance fog tailored per terrain:
       // Base (Hills/Canyons/Mountains/Water): near = 28m, far = 145m
-      // In clouds ("s"): near = ~22m, far = ~115m to view mountain peaks below
-      const targetNear = Math.max(18, 28 - cloudsW * 6);
-      const targetFar = Math.max(95, 145 - cloudsW * 30);
+      // In clouds ("s"): near = ~22m, far = ~115m once altitude reaches the mountain peaks (~38m to 48m)
+      const targetNear = Math.max(18, 28 - effectiveCloudsW * 6);
+      const targetFar = Math.max(95, 145 - effectiveCloudsW * 30);
 
       fog.near = targetNear;
       fog.far = targetFar;
     }
     this.hemiLight.groundColor.copy(targetGround);
 
-    // Keep directional light and shadows centered over the active flight region
-    this.dirLight.position.set(targetBirdX + 40, 80, birdZ - 20);
-    this.dirLight.target.position.set(targetBirdX, 0, birdZ + 25);
+    // Keep directional light and shadows centered over the camera's loaded terrain region
+    this.dirLight.position.set(camX + 40, 80, camZ - 20);
+    this.dirLight.target.position.set(camX, 0, camZ + 25);
     this.dirLight.target.updateMatrixWorld();
 
-    // Trees are recycled behind camera directly into far distance (>165m)
-    // positioning them safely on dry land and never in water or at high elevations in clouds
+    // Desired 2D ring buffer bounds: follow x, z position of the camera, not the bird
+    const centerGridX = Math.round(camX / this.chunkWidth);
+    const minGridX = centerGridX - 2;
+    const maxGridX = minGridX + 4;
+
+    const centerGridZ = Math.round(camZ / this.chunkLength);
+    const minGridZ = centerGridZ - 2;
+    const maxGridZ = minGridZ + 4;
+
+    // Trees are recycled to stay within active terrain bounds around camera
+    const minTerrainZ = minGridZ * this.chunkLength;
+    const maxTerrainZ = (maxGridZ + 1) * this.chunkLength;
     this.treesGroup.children.forEach((tree) => {
-      if (tree.position.z < birdZ - 65) {
-        const newZ = birdZ + 165 + Math.random() * 75;
+      if (tree.position.z < minTerrainZ - 15 || tree.position.z > maxTerrainZ + 15) {
+        const newZ = minTerrainZ + Math.random() * (maxTerrainZ - minTerrainZ);
         this.positionSingleTree(tree, newZ);
       } else if (tree.visible) {
         const w = flightPath.getBiomeWeights(tree.position.x, tree.position.z);
@@ -1558,14 +1644,6 @@ if (vBeachWave > 0.02) {
         }
       }
     });
-
-    // Desired 2D ring buffer bounds:
-    const centerGridX = Math.round(targetBirdX / this.chunkWidth);
-    const minGridX = centerGridX - 2;
-    const maxGridX = minGridX + 4;
-
-    const minGridZ = Math.floor((birdZ - 45.0) / this.chunkLength);
-    const maxGridZ = minGridZ + 4;
 
     // When force update is requested (e.g. branch selection or reset), refresh visible chunks ahead
     if (force) {
@@ -1678,8 +1756,8 @@ if (vBeachWave > 0.02) {
     const gatePoint = flightPath.getPathPoint(distance, branch);
     const weights = flightPath.getBiomeWeights(gatePoint.x, distance);
 
-    // Dynamic gap center relative to path: in rugged mountains, columns follow dramatic elevation sweeps
-    const gapCenterY = flightPath.getColumnGapCenterY(distance, weights.mountain, gatePoint.x);
+    // Dynamic gap center relative to path: biomes define dramatic vertical opening sweeps
+    const gapCenterY = flightPath.getColumnGapCenterY(distance, undefined, gatePoint.x);
     const gapHeight = flightPath.columnGapHeight; // Generous clearance opening for 3D navigation
 
     // Check flight path pitch angle at this column distance
@@ -1837,7 +1915,10 @@ if (vBeachWave > 0.02) {
     birdRelativeY: number,
     delta: number,
     birdX?: number,
-    birdBranch: 'SINGLE' | 'LEFT' | 'RIGHT' = 'SINGLE'
+    birdBranch: 'SINGLE' | 'LEFT' | 'RIGHT' = 'SINGLE',
+    birdY?: number,
+    cameraX?: number,
+    cameraZ?: number
   ): WindGustTriggerResult | null {
     // Generate new obstacles ahead based on exact 10-column per level distances
     while (flightPath.getColumnDistance(this.currentColumnIndex + 1) < birdDistance + 165.0) {
@@ -1845,13 +1926,6 @@ if (vBeachWave > 0.02) {
       const nextDist = flightPath.getColumnDistance(nextCol);
       this.spawnObstaclesAtDistance(nextDist);
     }
-
-    // Spin signature rings
-    this.obstacles.forEach((obs) => {
-      if (obs.ringMesh) {
-        obs.ringMesh.rotation.y += delta * 2.8;
-      }
-    });
 
     // Update all Wind Gust Pairs and check for triggers
     let triggeredGust: WindGustTriggerResult | null = null;
@@ -1863,9 +1937,10 @@ if (vBeachWave > 0.02) {
     }
 
     // Prune old wind gusts far behind the camera
+    const effectiveCamZ = cameraZ ?? this.camera?.position.z ?? birdDistance;
     for (let i = this.windGusts.length - 1; i >= 0; i--) {
       const gust = this.windGusts[i];
-      if (gust.pathDistance < birdDistance - 80) {
+      if (gust.pathDistance < effectiveCamZ - 80) {
         gust.dispose(this.scene);
         this.windGusts.splice(i, 1);
       }
@@ -1875,7 +1950,7 @@ if (vBeachWave > 0.02) {
     for (let i = this.obstacles.length - 1; i >= 0; i--) {
       const obs = this.obstacles[i];
       const zPos = obs.gateGroup ? obs.gateGroup.position.z : obs.pathDistance;
-      if (zPos < birdDistance - 60) {
+      if (zPos < effectiveCamZ - 60) {
         if (obs.gateGroup) {
           this.obstacleMeshesGroup.remove(obs.gateGroup);
         }
@@ -1884,23 +1959,14 @@ if (vBeachWave > 0.02) {
     }
 
     if (this.totemManager) {
-      this.totemManager.pruneTotems(birdDistance);
+      this.totemManager.pruneTotems(effectiveCamZ);
     }
 
-    // Update terrain mesh elevation and vertex colors ahead of bird
-    this.updateTerrain(birdDistance, false, delta, birdX);
-
-    // Update Canyon River flow & Rapids churning animation
-    this.canyonRiver.update(delta);
-
-    // Update water surface texture animation (gentle ocean swell drift across the water basins)
-    if (this.waterTexture) {
-      this.waterTexture.offset.x += delta * 0.015;
-      this.waterTexture.offset.y += delta * 0.025;
-    }
+    // Update terrain mesh elevation and vertex colors following camera
+    this.updateTerrain(birdDistance, false, delta, birdX, birdY, cameraX, cameraZ);
 
     // Stream and render prior crash feathers in the terrain
-    this.featherManager.updateTerrainFeathers(birdDistance);
+    this.featherManager.updateTerrainFeathers(effectiveCamZ);
 
     return triggeredGust;
   }

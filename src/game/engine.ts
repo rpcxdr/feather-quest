@@ -54,7 +54,22 @@ export class GameEngine {
   private timeSinceLastFlap: number = 999;
   private airTime: number = 0;
   private gameOverTime: number = 0;
-  private readonly DEATH_INPUT_LOCKOUT_MS: number = 500; // 0.5s death emotional buffer so player can see death & score
+  private readonly DEATH_INPUT_LOCKOUT_MS: number = 150; // Minimal debounce so the tap that caused death doesn't immediately dismiss
+
+  // Fly-back death animation state
+  private deathElapsed: number = 0;
+  private deathInitialQuat: THREE.Quaternion = new THREE.Quaternion();
+  private deathBackwardQuat: THREE.Quaternion = new THREE.Quaternion();
+  private startBirdPos: THREE.Vector3 = new THREE.Vector3();
+  private startBirdQuat: THREE.Quaternion = new THREE.Quaternion();
+  private deathCrashPos: THREE.Vector3 = new THREE.Vector3();
+  private deathCrashDistance: number = 0;
+  private flybackStartPos: THREE.Vector3 = new THREE.Vector3();
+  private flybackStartDist: number = 0;
+  private hasFlybackStarted: boolean = false;
+  private deathCamSideSign: number = 1.0;
+  private hasReachedStartPos: boolean = false;
+  private turnForwardElapsed: number = 0;
 
   // Physics & flight progress
   private pathDistance: number = 0;
@@ -150,6 +165,7 @@ export class GameEngine {
 
     // Environment (Pipes, Terrain, Clouds, Trees, Lights)
     this.environment = new EnvironmentManager(this.scene);
+    this.environment.setCamera(this.cameraDirector.camera);
 
     // Bird Character
     this.bird = new BirdCharacter();
@@ -295,6 +311,10 @@ export class GameEngine {
     this.pillarBounceVelocityY = 0;
     this.hitColumnCenter = null;
     this.isBirdGrounded = false;
+    this.deathElapsed = 0;
+    this.hasFlybackStarted = false;
+    this.hasReachedStartPos = false;
+    this.turnForwardElapsed = 0;
     this.isNewHighScoreRun = false;
     if (this.totemTimerBar) {
       this.totemTimerBar.reset();
@@ -314,16 +334,16 @@ export class GameEngine {
     const frame = flightPath.getFrame(this.startDistance, this.activeBranch);
     const birdPos = frame.position.clone();
     this.bird.group.position.copy(birdPos);
+    this.startBirdPos.copy(birdPos);
 
     // Orient bird along initial forward path
-    const frameAhead = flightPath.getFrame(this.startDistance + 1.0, this.activeBranch);
-    const forwardDir = frameAhead.position.clone().sub(birdPos).normalize();
-    let basisRight = new THREE.Vector3().crossVectors(frame.up, forwardDir).normalize();
-    if (basisRight.lengthSq() < 0.0001) basisRight = frame.right.clone();
-    const basisUp = new THREE.Vector3().crossVectors(forwardDir, basisRight).normalize();
+    const forwardDir = frame.tangent.clone();
+    let basisRight = frame.right.clone();
+    let basisUp = frame.up.clone();
     const m = new THREE.Matrix4();
     m.makeBasis(basisRight, basisUp, forwardDir);
     this.bird.group.quaternion.setFromRotationMatrix(m);
+    this.startBirdQuat.copy(this.bird.group.quaternion);
 
     this.cameraDirector.reset(
       birdPos,
@@ -334,7 +354,15 @@ export class GameEngine {
       this.activeBranch
     );
     this.bird.setFirstPerson(this.cameraMode === 'FIRST_PERSON');
-    this.environment.updateTerrain(this.startDistance, true, 0.016, this.startX);
+    this.environment.updateTerrain(
+      this.startDistance,
+      true,
+      0.016,
+      this.startX,
+      birdPos.y,
+      this.cameraDirector.camera.position.x,
+      this.cameraDirector.camera.position.z
+    );
 
     this.callbacks.onStateChange('READY');
     this.callbacks.onScoreUpdate(0, false);
@@ -484,12 +512,36 @@ export class GameEngine {
     if (this.state === 'GAMEOVER') return;
     this.state = 'GAMEOVER';
     this.gameOverTime = performance.now();
+    this.deathElapsed = 0;
+    this.deathCrashDistance = this.pathDistance;
+    this.deathCrashPos.copy(this.bird.group.position);
+    this.hasFlybackStarted = false;
+    this.hasReachedStartPos = false;
+    this.turnForwardElapsed = 0;
     this.speedTimeRemaining = 0;
     this.immunityTimeRemaining = 0;
     if (this.totemTimerBar) {
       this.totemTimerBar.hide();
     }
     this.bird.setBuffEffects(false, false);
+
+    const frame = flightPath.getFrame(this.pathDistance, this.activeBranch);
+    this.deathInitialQuat.copy(this.bird.group.quaternion);
+
+    // Calculate target orientation facing backwards along path (-frame.tangent) and upright
+    const backwardDir = frame.tangent.clone().negate().normalize();
+    const worldUp = new THREE.Vector3(0, 1, 0);
+    const turnRight = new THREE.Vector3().crossVectors(worldUp, backwardDir).normalize();
+    const turnUp = new THREE.Vector3().crossVectors(backwardDir, turnRight).normalize();
+    const mTurn = new THREE.Matrix4().makeBasis(turnRight, turnUp, backwardDir);
+    this.deathBackwardQuat.setFromRotationMatrix(mTurn);
+
+    // Trigger death camera: pull backwards and up 10m and hold position pointed at bird
+    this.cameraDirector.triggerDeathCamera(this.bird.group.position, frame);
+    const camToPath = this.cameraDirector.camera.position.clone().sub(frame.position);
+    const lateralDot = camToPath.dot(frame.right);
+    this.deathCamSideSign = lateralDot >= -0.2 ? 1.0 : -1.0;
+    this.bird.setFirstPerson(false);
 
     // Pillar collision bounce heuristic:
     // Compare the z position of the bird when it hits and the z position of the base of the column.
@@ -641,11 +693,9 @@ export class GameEngine {
       this.bird.group.position.copy(birdPos);
 
       // Point beak directly along initial path
-      const frameAhead = flightPath.getFrame(this.startDistance + 1.0, this.activeBranch);
-      const forwardDir = frameAhead.position.clone().sub(birdPos).normalize();
-      let basisRight = new THREE.Vector3().crossVectors(frame.up, forwardDir).normalize();
-      if (basisRight.lengthSq() < 0.0001) basisRight = frame.right.clone();
-      const basisUp = new THREE.Vector3().crossVectors(forwardDir, basisRight).normalize();
+      const forwardDir = frame.tangent.clone();
+      let basisRight = frame.right.clone();
+      let basisUp = frame.up.clone();
       const m = new THREE.Matrix4();
       m.makeBasis(basisRight, basisUp, forwardDir);
       this.bird.group.quaternion.setFromRotationMatrix(m);
@@ -662,7 +712,15 @@ export class GameEngine {
         this.activeBranch,
         this.bird.group.quaternion
       );
-      this.environment.updateTerrain(this.startDistance, false, delta, this.startX);
+      this.environment.updateTerrain(
+        this.startDistance,
+        false,
+        delta,
+        this.startX,
+        birdPos.y,
+        this.cameraDirector.camera.position.x,
+        this.cameraDirector.camera.position.z
+      );
       if (this.environment?.featherManager) {
         this.environment.featherManager.update(
           delta,
@@ -751,7 +809,10 @@ export class GameEngine {
         this.relativeY,
         delta,
         this.bird.group.position.x,
-        birdBranch
+        birdBranch,
+        this.bird.group.position.y,
+        this.cameraDirector.camera.position.x,
+        this.cameraDirector.camera.position.z
       );
       if (triggeredGust) {
         this.environment.onBranchSelected(
@@ -782,23 +843,22 @@ export class GameEngine {
       const birdPos = frame.position.clone().addScaledVector(frame.up, this.relativeY);
       this.bird.group.position.copy(birdPos);
 
-      // Lookahead point along the selected flight path trajectory
-      // This ensures the bird smoothly rotates so its beak is pointing directly along the selected path!
-      const lookAheadDist = 1.0;
+      // Forward lookahead orientation along flight path trajectory:
+      // The bird faces forward along the curving 3D flight corridor ahead,
+      // pitching dynamically with vertical climb/dive within natural avian bounds.
+      const lookAheadDist = 1.8;
       const branchAhead = flightPath.getBranchAtDistance(this.pathDistance + lookAheadDist);
       const frameAhead = flightPath.getFrame(this.pathDistance + lookAheadDist, branchAhead);
 
-      // Trajectory vertical position ahead based on vertical climb/dive
-      const dtAhead = lookAheadDist / Math.max(2.0, this.forwardSpeed);
-      const verticalAhead = THREE.MathUtils.clamp(
-        this.relativeY + this.verticalVelocity * dtAhead * 0.8,
-        -10.0,
-        12.0
-      );
-      const targetPointAhead = frameAhead.position.clone().addScaledVector(frameAhead.up, verticalAhead);
+      // Natural aerodynamic climb/dive pitch angle clamped within realistic avian bounds:
+      // ~ +22° max climb when flapping, ~ -26° max dive when falling
+      const climbRatio = (this.verticalVelocity / Math.max(4.0, this.forwardSpeed)) * 0.45;
+      const pitchAngle = THREE.MathUtils.clamp(climbRatio, -0.45, 0.40);
 
-      // Forward direction: vector pointing directly along the selected path ahead
-      const forwardDir = targetPointAhead.clone().sub(birdPos).normalize();
+      // Forward direction: path tangent heading ahead + natural climb/dive tilt along frameAhead.up
+      const forwardDir = frameAhead.tangent.clone()
+        .addScaledVector(frameAhead.up, pitchAngle)
+        .normalize();
 
       // Orthonormal basis: local +Z is forwardDir (beak), local +Y is up, local +X is right
       let basisRight = new THREE.Vector3().crossVectors(frame.up, forwardDir).normalize();
@@ -902,73 +962,39 @@ export class GameEngine {
         this.notifyStats();
       }
     } else if (this.state === 'GAMEOVER') {
-      // Game Over: bird falls to terrain or seabed floor if not already there, with column bounce if applicable
+      this.deathElapsed += delta;
       const frame = flightPath.getFrame(this.pathDistance, this.activeBranch);
-      const terrainH = flightPath.getTerrainHeight(this.bird.group.position.x, this.bird.group.position.z);
-      const groundY = terrainH + 0.4;
 
-      // 1. Ground detection: clamp to seabed/terrain surface and mark grounded
-      if (this.bird.group.position.y <= groundY) {
-        this.bird.group.position.y = groundY;
-        this.isBirdGrounded = true;
-      }
+      // (1) Keep Pillar Bounce: recoil horizontally & laterally away from column
+      if (this.isPillarBounce && this.pillarBounceDistanceTraveled < this.pillarBounceDistanceTarget) {
+        const remainingDist = this.pillarBounceDistanceTarget - this.pillarBounceDistanceTraveled;
+        const stepDist = Math.min(remainingDist, Math.abs(this.pillarBounceVelocityZ) * delta);
+        const deltaZ = stepDist * this.pillarBounceDirection;
+        this.bird.group.position.z += deltaZ;
+        this.pillarBounceDistanceTraveled += stepDist;
 
-      // 2. Air/Water physics & bounce (sinks to the bottom of the water; spins stop upon touching seabed/terrain)
-      if (!this.isBirdGrounded) {
-        const isUnderwater = this.bird.group.position.y < WATER_LEVEL;
-        const fallRate = isUnderwater ? 6.5 : 14.0;
+        // Smoothly decay bounce horizontal velocity
+        this.pillarBounceVelocityZ = THREE.MathUtils.lerp(this.pillarBounceVelocityZ, 0, 1.0 - Math.exp(-6.0 * delta));
 
-        if (this.isPillarBounce && this.pillarBounceDistanceTraveled < this.pillarBounceDistanceTarget) {
-          // Bounce horizontally in Z direction (backward or forward away from the column poly volume)
-          const remainingDist = this.pillarBounceDistanceTarget - this.pillarBounceDistanceTraveled;
-          const stepDist = Math.min(remainingDist, Math.abs(this.pillarBounceVelocityZ) * delta);
-          const deltaZ = stepDist * this.pillarBounceDirection;
-          this.bird.group.position.z += deltaZ;
-          this.pillarBounceDistanceTraveled += stepDist;
-
-          // Smoothly decay bounce horizontal velocity
-          this.pillarBounceVelocityZ = THREE.MathUtils.lerp(this.pillarBounceVelocityZ, 0, 1.0 - Math.exp(-6.0 * delta));
-
-          // Lateral bounce deflection
-          if (Math.abs(this.pillarBounceVelocityX) > 0.01) {
-            this.bird.group.position.x += this.pillarBounceVelocityX * delta;
-            this.pillarBounceVelocityX = THREE.MathUtils.lerp(this.pillarBounceVelocityX, 0, 1.0 - Math.exp(-5.0 * delta));
-          }
-
-          // Bounce upward pop before gravity pulls bird down
-          if (this.pillarBounceVelocityY > 0) {
-            this.bird.group.position.y += this.pillarBounceVelocityY * delta;
-            this.pillarBounceVelocityY -= 18.0 * delta;
-          } else {
-            this.bird.group.position.y -= fallRate * delta;
-          }
-
-          // Tumble rotation in the air or water
-          const rotRate = isUnderwater ? 1.5 : 3.5;
-          this.bird.group.rotation.x -= rotRate * delta * this.pillarBounceDirection;
-          this.bird.group.rotation.z += (rotRate * 0.6) * delta;
-        } else {
-          // Standard fall and tumble (gentler hydrodynamic sinking if underwater)
-          this.bird.group.position.y -= fallRate * delta;
-          const rotRate = isUnderwater ? 0.9 : 2.0;
-          this.bird.group.rotation.x += rotRate * delta;
-          this.bird.group.rotation.z += (rotRate * 0.75) * delta;
+        // Lateral bounce deflection
+        if (Math.abs(this.pillarBounceVelocityX) > 0.01) {
+          this.bird.group.position.x += this.pillarBounceVelocityX * delta;
+          this.pillarBounceVelocityX = THREE.MathUtils.lerp(this.pillarBounceVelocityX, 0, 1.0 - Math.exp(-5.0 * delta));
         }
 
-        // Re-check ground immediately after move
-        if (this.bird.group.position.y <= groundY) {
-          this.bird.group.position.y = groundY;
-          this.isBirdGrounded = true;
+        // Slight upward bounce pop that decays into hover
+        if (this.pillarBounceVelocityY > 0) {
+          this.bird.group.position.y += this.pillarBounceVelocityY * delta;
+          this.pillarBounceVelocityY -= 14.0 * delta;
         }
       }
 
-      // 3. Absolute Column Clearance Constraint:
-      // Guarantees that the dead bird is never positioned inside the poly volume of the column or its voxel base
-      if (this.hitColumnCenter) {
+      // Column Clearance Constraint: bird never penetrates pillar mesh during initial bounce
+      if (this.hitColumnCenter && this.deathElapsed <= 0.5) {
         const dx = this.bird.group.position.x - this.hitColumnCenter.x;
         const dz = this.bird.group.position.z - this.hitColumnCenter.z;
         const distSq = dx * dx + dz * dz;
-        const minClearance = 2.95; // Safe clearance radius outside 2x2 pillar and 4x4 base blocks
+        const minClearance = 2.95;
 
         if (distSq < minClearance * minClearance) {
           if (this.pillarBounceDirection < 0) {
@@ -983,17 +1009,143 @@ export class GameEngine {
         }
       }
 
-      this.bird.update(delta, 0, false);
+      const terrainH = flightPath.getTerrainHeight(this.bird.group.position.x, this.bird.group.position.z);
+      const minSafeFloor = Math.max(terrainH, WATER_LEVEL) + 0.8;
+
+      if (this.deathElapsed <= 0.5) {
+        // (1) Have the bird hover and turn backwards 0.5 seconds
+        const t = Math.min(1.0, this.deathElapsed / 0.5);
+        const smoothT = t * t * (3 - 2 * t);
+        this.bird.group.quaternion.copy(this.deathInitialQuat).slerp(this.deathBackwardQuat, smoothT);
+
+        // Hover in place with gentle floating bob
+        const hoverFloat = Math.sin(this.deathElapsed * 10.0) * 0.05;
+        this.bird.group.position.y += hoverFloat * delta;
+        if (this.bird.group.position.y < minSafeFloor) {
+          this.bird.group.position.y = minSafeFloor;
+        }
+
+        // Active wing flapping during hover
+        this.bird.update(delta, 0, true);
+      } else if (!this.hasReachedStartPos && this.deathElapsed <= 0.85) {
+        // (1) After 0.5s turn around, quick wing flutter takeoff preparation
+        this.bird.group.quaternion.copy(this.deathBackwardQuat);
+        this.bird.triggerQuickFlutter(34);
+
+        // Takeoff working animation: small body crouch and upward lift
+        const flutterProgress = (this.deathElapsed - 0.5) / 0.35;
+        const takeoffCrouch = -Math.sin(flutterProgress * Math.PI * 2.0) * 0.12;
+        this.bird.group.position.y += takeoffCrouch * delta;
+        if (this.bird.group.position.y < minSafeFloor) {
+          this.bird.group.position.y = minSafeFloor;
+        }
+
+        this.bird.update(delta * 1.5, 2.0, true);
+      } else if (!this.hasReachedStartPos) {
+        // Capture initial takeoff state on the very first frame of return flight
+        if (!this.hasFlybackStarted) {
+          this.hasFlybackStarted = true;
+          this.flybackStartPos.copy(this.bird.group.position);
+          this.flybackStartDist = Math.max(this.startDistance + 0.1, this.pathDistance);
+        }
+
+        const flybackSpeed = this.forwardSpeed; // Constant normal flight speed (9.8 m/s)
+        this.pathDistance -= flybackSpeed * delta;
+
+        const totalDist = Math.max(0.1, this.flybackStartDist - this.startDistance);
+        const distFlownBack = Math.max(0, this.flybackStartDist - this.pathDistance);
+        const distToStart = Math.max(0, this.pathDistance - this.startDistance);
+
+        if (this.pathDistance <= this.startDistance) {
+          this.pathDistance = this.startDistance;
+          this.bird.group.position.copy(this.startBirdPos);
+          this.hasReachedStartPos = true;
+          this.turnForwardElapsed = 0;
+          this.deathBackwardQuat.copy(this.bird.group.quaternion);
+        } else {
+          const curFrame = flightPath.getFrame(this.pathDistance, this.activeBranch);
+
+          // 1. Vertical Profile (Y):
+          // Cruise right under the cloud layer deck
+          const terrainH = flightPath.getTerrainHeight(curFrame.position.x, curFrame.position.z);
+          const surfaceH = Math.max(terrainH, WATER_LEVEL);
+          const baseCloudUnderdeck = 26.5;
+          const justUnderCloudLayer = Math.max(baseCloudUnderdeck, curFrame.position.y + 11.5, surfaceH + 6.5);
+
+          // Ascent is 50% less steep: climb distance is ~115m (or proportional for short runs)
+          const climbDist = Math.min(115.0, totalDist * 0.65);
+          const climbT = climbDist > 0.01 ? THREE.MathUtils.clamp(distFlownBack / climbDist, 0.0, 1.0) : 1.0;
+          const smoothClimb = climbT * climbT * (3.0 - 2.0 * climbT);
+          const cruiseY = THREE.MathUtils.lerp(this.flybackStartPos.y, justUnderCloudLayer, smoothClimb);
+
+          // Smooth final approach descent into startBirdPos.y
+          const approachDist = Math.min(24.0, totalDist * 0.35);
+          const approachT = approachDist > 0.01 ? THREE.MathUtils.clamp(distToStart / approachDist, 0.0, 1.0) : 0.0;
+          const smoothApproach = approachT * approachT * (3.0 - 2.0 * approachT);
+          const targetY = THREE.MathUtils.lerp(this.startBirdPos.y, cruiseY, smoothApproach);
+
+          // 2. Horizontal Profile (X, Z):
+          // Target an x offset of 4 meters toward the direction of the camera to clear all columns
+          const camSide = this.deathCamSideSign >= 0 ? 1.0 : -1.0;
+          const cruisingX = curFrame.position.x + 4.0 * camSide;
+
+          // The 4-meter camera-side offset occurs within the first 10 meters of the return flight
+          const lateralOffsetDist = Math.max(0.1, Math.min(10.0, totalDist * 0.5));
+          const lateralT = THREE.MathUtils.clamp(distFlownBack / lateralOffsetDist, 0.0, 1.0);
+          const smoothLateral = lateralT * lateralT * (3.0 - 2.0 * lateralT);
+          const intermediateX = THREE.MathUtils.lerp(this.flybackStartPos.x, cruisingX, smoothLateral);
+
+          // On final approach settling, smoothly ease back to start position X
+          const targetX = THREE.MathUtils.lerp(this.startBirdPos.x, intermediateX, smoothApproach);
+
+          // Smooth longitudinal transition from takeoff Z into flight corridor within the first 10 meters
+          const zBlendDist = Math.max(1.0, Math.min(10.0, totalDist * 0.2));
+          const zBlendT = THREE.MathUtils.clamp(distFlownBack / zBlendDist, 0.0, 1.0);
+          const smoothZBlend = zBlendT * zBlendT * (3.0 - 2.0 * zBlendT);
+          const targetZ = THREE.MathUtils.lerp(this.flybackStartPos.z, curFrame.position.z, smoothZBlend);
+
+          // Continuous 3D positioning
+          const prevPos = this.bird.group.position.clone();
+          this.bird.group.position.set(targetX, targetY, targetZ);
+
+          // 3. Continuous orientation aligned with backward flight velocity:
+          const backwardDir = curFrame.tangent.clone().negate().normalize();
+          const dy = targetY - prevPos.y;
+          const climbSlope = THREE.MathUtils.clamp(dy / Math.max(0.001, flybackSpeed * delta), -0.35, 0.35);
+          const flightDir = backwardDir.clone().add(new THREE.Vector3(0, climbSlope, 0)).normalize();
+
+          const worldUp = new THREE.Vector3(0, 1, 0);
+          const flightRight = new THREE.Vector3().crossVectors(worldUp, flightDir).normalize();
+          const flightUp = new THREE.Vector3().crossVectors(flightDir, flightRight).normalize();
+          const flightMatrix = new THREE.Matrix4().makeBasis(flightRight, flightUp, flightDir);
+          const targetQuat = new THREE.Quaternion().setFromRotationMatrix(flightMatrix);
+
+          // Smooth quaternion tracking with zero snapping
+          this.bird.group.quaternion.slerp(targetQuat, 1.0 - Math.exp(-12.0 * delta));
+
+          // Active wing flapping while flying back (flap twice normal rate as the bird ascends)
+          const ascentWeight = 1.0 - smoothClimb;
+          const flapSpeedMultiplier = THREE.MathUtils.lerp(1.0, 2.0, ascentWeight);
+          this.bird.update(delta, climbSlope * 6.0, true, flapSpeedMultiplier);
+        }
+      } else {
+        // (2) after reaching original position, have bird face forward again before returning to home screen
+        this.bird.group.position.copy(this.startBirdPos);
+        this.turnForwardElapsed += delta;
+        const turnDuration = 0.35;
+        const t = Math.min(1.0, this.turnForwardElapsed / turnDuration);
+        const smoothT = t * t * (3 - 2 * t);
+        this.bird.group.quaternion.copy(this.deathBackwardQuat).slerp(this.startBirdQuat, smoothT);
+        this.bird.update(delta, 0, true);
+
+        if (this.turnForwardElapsed >= turnDuration) {
+          this.bird.group.quaternion.copy(this.startBirdQuat);
+          this.resetGame();
+          return;
+        }
+      }
       if (this.recordHorizonManager) {
         this.recordHorizonManager.update(delta, this.pathDistance, this.bird.group.position, false, this.activeBranch);
-      }
-      this.environment.updateTerrain(this.bird.group.position.z, false, delta, this.bird.group.position.x);
-      if (this.environment?.featherManager) {
-        this.environment.featherManager.update(
-          delta,
-          this.bird.group.position,
-          this.environment.obstacles
-        );
       }
       this.cameraDirector.update(
         delta,
@@ -1006,6 +1158,31 @@ export class GameEngine {
         this.activeBranch,
         this.bird.group.quaternion
       );
+      this.environment.updateTerrain(
+        this.bird.group.position.z,
+        false,
+        delta,
+        this.bird.group.position.x,
+        this.bird.group.position.y,
+        this.cameraDirector.camera.position.x,
+        this.cameraDirector.camera.position.z
+      );
+      if (this.environment?.featherManager) {
+        this.environment.featherManager.update(
+          delta,
+          this.bird.group.position,
+          this.environment.obstacles
+        );
+      }
+      // Ring acquisition animations continue smoothly during crash and return flight
+      if (this.ringEffectManager) {
+        this.ringEffectManager.update(
+          delta,
+          this.pathDistance,
+          this.cameraDirector.camera,
+          this.environment.obstacles
+        );
+      }
     }
 
     // Render 3D Scene
@@ -1040,6 +1217,7 @@ export class GameEngine {
           if (this.immunityTimeRemaining > 0) {
             soundManager.playShieldDeflect();
             this.bird.triggerShieldDeflect();
+            this.bird.triggerFeatherExplosion();
             this.relativeY = upperThreshold - 0.25;
             this.verticalVelocity = Math.min(this.verticalVelocity, -3.5);
             return;
@@ -1067,6 +1245,7 @@ export class GameEngine {
           if (this.immunityTimeRemaining > 0) {
             soundManager.playShieldDeflect();
             this.bird.triggerShieldDeflect();
+            this.bird.triggerFeatherExplosion();
             this.relativeY = lowerThreshold + 0.25;
             this.verticalVelocity = Math.max(this.verticalVelocity, 5.0);
             return;
@@ -1109,6 +1288,7 @@ export class GameEngine {
       if (this.immunityTimeRemaining > 0) {
         soundManager.playShieldDeflect();
         this.bird.triggerShieldDeflect();
+        this.bird.triggerFeatherExplosion();
         this.verticalVelocity = Math.max(this.verticalVelocity, 6.2);
         this.relativeY += 1.2;
         return;

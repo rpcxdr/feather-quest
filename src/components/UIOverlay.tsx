@@ -114,10 +114,19 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({
   const [buttonRect, setButtonRect] = useState<DOMRect | null>(null);
   const flyButtonRef = useRef<HTMLButtonElement>(null);
   const prevGameStateRef = useRef<GameState>(gameState);
+  const readyEnteredTimeRef = useRef<number>(0);
+
+  useEffect(() => {
+    if (gameState === 'READY') {
+      readyEnteredTimeRef.current = performance.now();
+    }
+  }, [gameState]);
 
   const handleFlyClick = useCallback(
     (e: React.MouseEvent<HTMLButtonElement>) => {
       e.stopPropagation();
+      // Block ghost clicks within 450ms of entering READY state (e.g. mobile tap from GAMEOVER)
+      if (performance.now() - readyEnteredTimeRef.current < 450) return;
       if (isDissolving || gameState !== 'READY') return;
 
       if (flyButtonRef.current) {

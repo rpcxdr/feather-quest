@@ -24,14 +24,40 @@ export class CanyonBiome extends Biome {
   }
 
   public getPathUndulation(z: number): number {
-    // Incommensurate prime wavelengths (331m, 157m, 719m)
-    // Non-repeating along the river canyon floor
+    // Smooth, stable canyon flight path cruising naturally through the canyon gorge
+    // Centered gracefully between the river (-6.6m) and canyon shoulder (12.0m)
     const base =
-      -1.5 +
-      Math.sin(z * 0.018982) * 2.8 +
-      Math.cos(z * 0.040020 + 0.7) * 1.7 +
-      Math.sin(z * 0.008739 + 1.4) * 1.2;
+      -7.0 +
+      Math.sin(z * 0.01898) * 1.8 +
+      Math.cos(z * 0.03841 + 0.9) * 1.2;
     return base * this.scale;
+  }
+
+  public override getColumnGapCenterY(distance: number): number {
+    // Dynamic canyon column gap undulation:
+    // Low frequency variations drive broad, sweeping transitions across the canyon depth and mesa heights,
+    // while high-frequency variations have greatly reduced magnitude to eliminate erratic step jumps between adjacent columns.
+    const lowFreq1 = Math.sin(distance * 0.0165 + 0.2) * 10.2;
+    const lowFreq2 = Math.cos(distance * 0.0278 - 0.5) * 3.8;
+
+    // Reduced magnitude high frequency variations (fine organic texture without sharp height jumps)
+    const highFreq =
+      Math.sin(distance * 0.0712 + 1.1) * 1.80 +
+      Math.cos(distance * 0.128 + 0.7) * 1.40;
+
+    const baseCenter = 7.8;
+    let rawY = baseCenter + lowFreq1 + lowFreq2 + highFreq;
+
+    // Soft bounds preserving deep river approaches and mesa crests
+    if (rawY < -3.5) {
+      rawY = -3.5 + 0.25 * (rawY - (-3.5)) / (1.0 + Math.abs(rawY - (-3.5)) * 0.4);
+    } else if (rawY > 20.5) {
+      rawY = 20.5 + 0.25 * (rawY - 20.5) / (1.0 + Math.abs(rawY - 20.5) * 0.4);
+    }
+
+    const targetWorldGapY = rawY * this.scale;
+    const flightPathY = 15.0 + this.getPathUndulation(distance);
+    return targetWorldGapY - flightPathY;
   }
 
   public getNaturalTerrainHeight(
@@ -40,35 +66,34 @@ export class CanyonBiome extends Biome {
     context?: { rawCenterX?: number; rawCenterY?: number }
   ): number {
     const rawCenterX = context?.rawCenterX ?? 0;
-    const rawCenterY = context?.rawCenterY ?? 15.0;
 
     // River altitude set just above sea level (WATER_LEVEL = -7.0m)
     // allowing smooth natural transition when merging into ocean / shallow water biomes
     const waterY = WATER_LEVEL + (this.scale === 1.0 ? 0.38 : 0.28);
-    const riverBedY = waterY - 1.2;
+    const riverBedY = waterY - 1.5;
 
-    const riverHalfWidth = 5.0; // Narrower canyon river (~10m wide)
+    const riverHalfWidth = 2.8; // Narrower bottom river channel (~5.6m wide)
     const slotHalfWidth = 10.5; // Sharp steep slot canyon gorge
-    const canyonShoulder = rawCenterY + (this.scale === 1.0 ? 4.0 : 2.5);
-    const plateauHeight = rawCenterY + (this.scale === 1.0 ? 20.0 : 14.0);
+    const canyonShoulder = 12.0 * this.scale;
+    const plateauHeight = 18.0 * this.scale;
 
     const dx = Math.abs(x - rawCenterX);
     let hCanyon: number;
 
     if (dx <= riverHalfWidth) {
-      // Submerged riverbed: concave dish reaching water level exactly at dx = riverHalfWidth
+      // Submerged riverbed: sharp V-notch converging at dx = 0
       const r = dx / riverHalfWidth;
-      hCanyon = riverBedY + (r * r) * (waterY - riverBedY);
+      hCanyon = riverBedY + Math.pow(r, 0.95) * (waterY - riverBedY);
     } else if (dx <= slotHalfWidth) {
-      // Sharp, steep canyon walls rising directly out of the water surface
+      // Sharp, steep V-angled canyon walls rising continuously out of the bottom notch
       const u = (dx - riverHalfWidth) / (slotHalfWidth - riverHalfWidth);
-      const sharpWall = Math.pow(u, 0.28);
+      const sharpWall = Math.pow(u, 0.92);
       const rockyCrags =
-        Math.sin(u * Math.PI * 3.5 + z * 0.045) * 0.45 +
-        Math.cos(z * 0.019) * 0.3;
+        Math.sin(u * Math.PI * 3.5 + z * 0.045) * 0.40 +
+        Math.cos(z * 0.019) * 0.25;
       hCanyon = waterY + sharpWall * (canyonShoulder - waterY) + rockyCrags;
     } else {
-      // Upper mesa rim transitions up to plateau
+      // Upper mesa rim transitions up to plateau (the flat mesa tops of the canyon)
       const wallDist = dx - slotHalfWidth;
       const wallRatio = Math.min(1.0, wallDist / 12.0);
       const smoothWall = wallRatio * wallRatio * (3.0 - 2.0 * wallRatio);
@@ -99,12 +124,13 @@ export class CanyonBiome extends Biome {
 
   public getVertexColor(ctx: TerrainVertexColorContext): [number, number, number] {
     const { h, distToBranch, blockNoise } = ctx;
-    if (distToBranch < 5.0) {
+    const isWaterLevel = h < WATER_LEVEL + 0.8;
+    if (isWaterLevel && distToBranch < 2.8) {
       // Submerged wet riverbed slate & dark river rock
       return [0.11, 0.22, 0.28];
-    } else if (distToBranch < 6.8) {
+    } else if (isWaterLevel && distToBranch < 4.2) {
       // Damp shoreline gravel & clay
-      const tShore = (distToBranch - 5.0) / 1.8;
+      const tShore = (distToBranch - 2.8) / 1.4;
       return [
         THREE.MathUtils.lerp(0.11, 0.48, tShore),
         THREE.MathUtils.lerp(0.22, 0.30, tShore),

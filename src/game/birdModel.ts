@@ -708,6 +708,13 @@ export class BirdCharacter {
   }
 
   /**
+   * Energetic quick wing flutters for takeoff working animation
+   */
+  public triggerQuickFlutter(speed: number = 32) {
+    this.flapSpeed = Math.max(this.flapSpeed, speed);
+  }
+
+  /**
    * Energetic golden sparkle burst from both wingtips when touching a spinning ring
    */
   public triggerRingCollectEffects() {
@@ -754,7 +761,7 @@ export class BirdCharacter {
     return this.isFirstPerson;
   }
 
-  public update(delta: number, verticalVel: number, isAlive: boolean) {
+  public update(delta: number, verticalVel: number, isAlive: boolean, flapSpeedMultiplier: number = 1.0) {
     if (!isAlive) {
       this.characterModelGroup.visible = true;
     } else {
@@ -762,8 +769,9 @@ export class BirdCharacter {
     }
 
     if (isAlive) {
-      // Natural flap speed decaying toward a calm cruise glide
-      this.flapSpeed = THREE.MathUtils.lerp(this.flapSpeed, 7.2, delta * 3.2);
+      // Natural flap speed decaying toward a calm cruise glide (scaled by flapSpeedMultiplier)
+      const targetFlapRate = 7.2 * flapSpeedMultiplier;
+      this.flapSpeed = THREE.MathUtils.lerp(this.flapSpeed, targetFlapRate, delta * 3.2);
       this.flapPhase += this.flapSpeed * delta;
 
       const sinWave = Math.sin(this.flapPhase);

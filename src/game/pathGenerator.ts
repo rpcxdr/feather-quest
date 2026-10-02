@@ -789,21 +789,21 @@ export class FlightPathGenerator {
     if (weights.biomeWeights) {
       for (const [biome, w] of weights.biomeWeights.entries()) {
         if (w > 0.0001) {
-          undulation += w * biome.getPathUndulation(z);
+          undulation += w * biome.getPathUndulation(z, resolvedX);
         }
       }
     } else {
       // Fallback
       undulation =
-        weights.hills * (biomeRegistry.getByChar('H')?.getPathUndulation(z) ?? 0) +
-        weights.hillsLow * (biomeRegistry.getByChar('h')?.getPathUndulation(z) ?? 0) +
-        weights.mountain * (biomeRegistry.getByChar('M')?.getPathUndulation(z) ?? 0) +
-        weights.mountainLow * (biomeRegistry.getByChar('m')?.getPathUndulation(z) ?? 0) +
-        weights.canyon * (biomeRegistry.getByChar('C')?.getPathUndulation(z) ?? 0) +
-        weights.canyonLow * (biomeRegistry.getByChar('c')?.getPathUndulation(z) ?? 0) +
-        (weights.clouds || 0) * (biomeRegistry.getByChar('s')?.getPathUndulation(z) ?? 0) +
-        (weights.waterDeep || 0) * (biomeRegistry.getByChar('W')?.getPathUndulation(z) ?? 0) +
-        (weights.waterShallow || 0) * (biomeRegistry.getByChar('w')?.getPathUndulation(z) ?? 0);
+        weights.hills * (biomeRegistry.getByChar('H')?.getPathUndulation(z, resolvedX) ?? 0) +
+        weights.hillsLow * (biomeRegistry.getByChar('h')?.getPathUndulation(z, resolvedX) ?? 0) +
+        weights.mountain * (biomeRegistry.getByChar('M')?.getPathUndulation(z, resolvedX) ?? 0) +
+        weights.mountainLow * (biomeRegistry.getByChar('m')?.getPathUndulation(z, resolvedX) ?? 0) +
+        weights.canyon * (biomeRegistry.getByChar('C')?.getPathUndulation(z, resolvedX) ?? 0) +
+        weights.canyonLow * (biomeRegistry.getByChar('c')?.getPathUndulation(z, resolvedX) ?? 0) +
+        (weights.clouds || 0) * (biomeRegistry.getByChar('s')?.getPathUndulation(z, resolvedX) ?? 0) +
+        (weights.waterDeep || 0) * (biomeRegistry.getByChar('W')?.getPathUndulation(z, resolvedX) ?? 0) +
+        (weights.waterShallow || 0) * (biomeRegistry.getByChar('w')?.getPathUndulation(z, resolvedX) ?? 0);
     }
 
     return baseCorridorY + undulation;
@@ -937,25 +937,34 @@ export class FlightPathGenerator {
     return (level + 1) * LEVEL_LENGTH;
   }
 
-  public getColumnGapCenterY(distance: number, mountainWeight?: number, x?: number): number {
+  public getColumnGapCenterY(distance: number, _mountainWeight?: number, x?: number): number {
     const resolvedX = x !== undefined ? x : this.getLateralX(distance, 'SINGLE');
     const weights = this.getBiomeWeights(resolvedX, distance);
-    if (mountainWeight !== undefined) {
-      const baseAmp = 2.4 + mountainWeight * 0.5;
-      return (
-        Math.sin(distance * 0.09672) * baseAmp +
-        Math.cos(distance * 0.04520 + 1.1) * 1.2 +
-        Math.sin(distance * 0.01641) * 0.75
-      );
+
+    let gapCenterY = 0;
+    if (weights.biomeWeights) {
+      for (const [biome, w] of weights.biomeWeights.entries()) {
+        if (w > 0.0001) {
+          gapCenterY += w * biome.getColumnGapCenterY(distance);
+        }
+      }
+      return gapCenterY;
     }
-    // Generic evaluation across active biomes
-    const m = (weights.mountain + weights.mountainLow * 0.75);
-    const baseAmp = 2.4 + m * 0.5;
-    return (
-      Math.sin(distance * 0.09672) * baseAmp +
-      Math.cos(distance * 0.04520 + 1.1) * 1.2 +
-      Math.sin(distance * 0.01641) * 0.75
-    );
+
+    // Generic evaluation fallback across active biomes
+    const m = (weights.mountain || 0) + (weights.mountainLow || 0) * 0.75;
+    const c = (weights.canyon || 0) + (weights.canyonLow || 0) * 0.75;
+    const s = weights.clouds || 0;
+
+    const mBiome = biomeRegistry.getByChar('M');
+    const cBiome = biomeRegistry.getByChar('C');
+    const sBiome = biomeRegistry.getByChar('s');
+
+    if (m > 0.001 && mBiome) gapCenterY += m * mBiome.getColumnGapCenterY(distance);
+    if (c > 0.001 && cBiome) gapCenterY += c * cBiome.getColumnGapCenterY(distance);
+    if (s > 0.001 && sBiome) gapCenterY += s * sBiome.getColumnGapCenterY(distance);
+
+    return gapCenterY;
   }
 
   public getColumnGapBottomRelY(z: number): number {
@@ -1147,8 +1156,8 @@ export class FlightPathGenerator {
 
     // Corridor geometry parameters
     const canyonWeight = (weights.canyon || 0) + (weights.canyonLow || 0);
-    const rFloor = THREE.MathUtils.lerp(7.0, 4.5, canyonWeight);  // Flat corridor floor width (m)
-    const rWall = THREE.MathUtils.lerp(22.0, 11.0, canyonWeight);  // Transition width from corridor floor up to natural terrain (m)
+    const rFloor = THREE.MathUtils.lerp(7.0, 0.8, canyonWeight);  // Narrow floor width to preserve sharp V bottom in canyon (m)
+    const rWall = THREE.MathUtils.lerp(22.0, 10.5, canyonWeight);  // Transition width from corridor floor up to natural terrain (m)
 
     const gapBottomRelY = this.getColumnGapBottomRelY(z);
 

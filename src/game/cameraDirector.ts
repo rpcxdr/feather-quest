@@ -94,8 +94,47 @@ export class CinematicCameraDirector {
   private ringShakeTimer: number = 0;
   private ringShakeIntensity: number = 0;
 
-  // Orbit angle for game over state
-  private gameOverOrbitAngle: number = 0;
+  // Death camera state: pull back and up, hold position pointed at bird
+  private isDeathCamActive: boolean = false;
+  private deathHoldPos: THREE.Vector3 = new THREE.Vector3();
+  private deathCamStartPos: THREE.Vector3 = new THREE.Vector3();
+  private deathCamTimer: number = 0;
+
+  /**
+   * Triggers the fly back death camera: pulls backwards and further to the side it is on,
+   * increasing altitude to give perspective on the crash site, and holding fixed (x,z) position.
+   */
+  public triggerDeathCamera(birdPos: THREE.Vector3, frame: PathFrame) {
+    this.isDeathCamActive = true;
+    this.isFirstPerson = false;
+    this.deathCamTimer = 0;
+    this.deathCamStartPos.copy(this.currentPos);
+
+    // Determine which side the camera is currently on relative to the flight corridor
+    const camToPath = this.currentPos.clone().sub(frame.position);
+    const lateralDot = camToPath.dot(frame.right);
+    // If roughly centered, bias slightly right (1.0), otherwise follow the side it's currently on
+    const sideSign = lateralDot >= -0.2 ? 1.0 : -1.0;
+
+    // Pull backwards relative to flight path (-tangent) by 11.5m and further to the side it is on (+5.8m)
+    const backwardDir = frame.tangent.clone().negate().normalize();
+    const sideOffset = frame.right.clone().multiplyScalar(sideSign * 5.8);
+    const targetPos = this.currentPos.clone()
+      .addScaledVector(backwardDir, 11.5)
+      .add(sideOffset);
+
+    // Initial camera altitude target is raised up above the bird
+    targetPos.y = birdPos.y + 3.5;
+
+    // Ensure the camera hold position remains safely above terrain and water
+    const terrainH = flightPath.getTerrainHeight(targetPos.x, targetPos.z);
+    const minSafeCamY = Math.max(terrainH, WATER_LEVEL) + 2.5;
+    if (targetPos.y < minSafeCamY) {
+      targetPos.y = minSafeCamY;
+    }
+
+    this.deathHoldPos.copy(targetPos);
+  }
 
   // First Person Camera State
   private isFirstPerson: boolean = false;
@@ -179,7 +218,8 @@ export class CinematicCameraDirector {
     this.targetShotIndex = 0;
     this.shotTimer = 0;
     this.transitionAlpha = 1.0;
-    this.gameOverOrbitAngle = 0;
+    this.isDeathCamActive = false;
+    this.deathCamTimer = 0;
     this.ringFovPunch = 0;
     this.ringShakeTimer = 0;
     this.ringShakeIntensity = 0;
@@ -420,86 +460,131 @@ export class CinematicCameraDirector {
   }
 
   /**
-   * Proactively avoids camera collision with the terrain (ground, stepped terraces, and rising canyon/mountain walls),
-   * ensuring the camera never passes through the terrain while swinging wide to the left or right.
+   * Evaluates if a given world position intersects or encroaches on the terrain.
    */
-  public applyTerrainAvoidance(pos: THREE.Vector3, frame: PathFrame): void {
-    // 1. Proactive ground & terrace clearance check
-    // Probe terrain height at center and 4 cardinal offset points around camera
-    const probeRadius = 1.35;
-    const hCenter = flightPath.getTerrainHeight(pos.x, pos.z);
-    const hX1 = flightPath.getTerrainHeight(pos.x + probeRadius, pos.z);
-    const hX2 = flightPath.getTerrainHeight(pos.x - probeRadius, pos.z);
-    const hZ1 = flightPath.getTerrainHeight(pos.x, pos.z + probeRadius);
-    const hZ2 = flightPath.getTerrainHeight(pos.x, pos.z - probeRadius);
+  private getTerrainClearance(
+    x: number,
+    y: number,
+    z: number,
+    probeRadius: number = 1.25,
+    minClearance: number = 1.3
+  ): { intersects: boolean; safeY: number; terrainH: number } {
+    const hCenter = flightPath.getTerrainHeight(x, z);
+    const hX1 = flightPath.getTerrainHeight(x + probeRadius, z);
+    const hX2 = flightPath.getTerrainHeight(x - probeRadius, z);
+    const hZ1 = flightPath.getTerrainHeight(x, z + probeRadius);
+    const hZ2 = flightPath.getTerrainHeight(x, z - probeRadius);
     let maxLocalTerrainH = Math.max(hCenter, hX1, hX2, hZ1, hZ2);
-    const weightsCenter = flightPath.getBiomeWeights(pos.x, pos.z);
+
+    const weightsCenter = flightPath.getBiomeWeights(x, z);
     if (hCenter < WATER_LEVEL || weightsCenter.primary === 'SHALLOW_WATERS' || weightsCenter.primary === 'DEEP_WATERS') {
       maxLocalTerrainH = Math.max(maxLocalTerrainH, WATER_LEVEL);
     }
 
-    const minClearance = 1.5; // Minimum clearance above terrain surface in meters
-    const softCushion = 1.2;  // Soft upward repulsion cushion zone
     const safeY = maxLocalTerrainH + minClearance;
+    return {
+      intersects: y < safeY,
+      safeY,
+      terrainH: maxLocalTerrainH,
+    };
+  }
 
-    // If within cushion zone or penetrating, apply smooth upward lift
-    if (pos.y < safeY + softCushion) {
-      if (pos.y <= safeY) {
-        pos.y = safeY;
-      } else {
-        const t = 1.0 - (pos.y - safeY) / softCushion;
-        const cushionLift = t * t * (3.0 - 2.0 * t) * softCushion;
-        pos.y += cushionLift;
-      }
+  /**
+   * Avoids camera collision with terrain:
+   * When the camera would normally be moved up because of the terrain, instead move it closer to the flight path
+   * (to the right or the left) until it is no longer intersecting with the terrain.
+   */
+  public applyTerrainAvoidance(pos: THREE.Vector3, frame: PathFrame): void {
+    const probeRadius = 1.35;
+    const minClearance = 1.35;
+    const softCushion = 0.6;
+
+    // Check if the camera would intersect or encroach on the terrain at pos
+    const clearance = this.getTerrainClearance(pos.x, pos.y, pos.z, probeRadius, minClearance + softCushion);
+    if (!clearance.intersects) {
+      return;
     }
 
-    // 2. Lateral wall / rising slope avoidance
-    // When swung out wide to the left or right, check if rising canyon/mountain slopes encroach
+    // Determine lateral offset of camera from the flight path along frame.right
     const lateralOffset = (pos.x - frame.position.x) * frame.right.x + (pos.z - frame.position.z) * frame.right.z;
     const absLateral = Math.abs(lateralOffset);
 
-    if (absLateral > 1.2) {
+    // If offset from the flight path, move closer to the flight path (left or right) until clear
+    if (absLateral > 0.05) {
       const sideSign = Math.sign(lateralOffset);
-      const probeOutwardDist = 1.6;
-      const probeX = pos.x + frame.right.x * sideSign * probeOutwardDist;
-      const probeZ = pos.z + frame.right.z * sideSign * probeOutwardDist;
-      const hWall = flightPath.getTerrainHeight(probeX, probeZ);
+      const inwardDir = frame.right.clone().multiplyScalar(-sideSign);
 
-      // If the terrain in the outward direction rises up close to or above camera height
-      const encroachment = hWall - (pos.y - 1.2);
-      if (encroachment > 0) {
-        // Smoothly tuck the lateral offset inward away from the rising wall
-        const tuckFactor = Math.min(absLateral - 1.0, encroachment * 0.85);
-        if (tuckFactor > 0) {
-          pos.addScaledVector(frame.right, -sideSign * tuckFactor);
+      let low = 0;
+      let high = absLateral;
+
+      // Binary search to find minimal inward distance needed to clear terrain
+      for (let iter = 0; iter < 10; iter++) {
+        const mid = (low + high) * 0.5;
+        const testX = pos.x + inwardDir.x * mid;
+        const testZ = pos.z + inwardDir.z * mid;
+        const check = this.getTerrainClearance(testX, pos.y, testZ, probeRadius, minClearance);
+        if (check.intersects) {
+          low = mid;
+        } else {
+          high = mid;
         }
-        // Also gently ride up along the slope if needed
-        const slopeRide = Math.min(2.0, encroachment * 0.45);
-        pos.y += slopeRide;
       }
+
+      // Add a small safety buffer (0.2m) inward towards the flight path
+      const shift = Math.min(absLateral, high + 0.2);
+      pos.addScaledVector(inwardDir, shift);
+    }
+
+    // Floor safety fallback: if camera is directly on the flight path and still below the floor surface
+    const floorCheck = this.getTerrainClearance(pos.x, pos.y, pos.z, 0.9, 1.2);
+    if (floorCheck.intersects) {
+      pos.y = floorCheck.safeY;
     }
   }
 
   /**
-   * Final absolute hard safety clamp to guarantee the camera never penetrates terrain,
-   * applied directly to the camera's actual interpolated position.
+   * Final absolute hard safety clamp to guarantee camera never penetrates terrain.
+   * If the camera would intersect the terrain, move it closer to the flight path (left or right).
    */
   public enforceAbsoluteTerrainClearance(pos: THREE.Vector3, frame?: PathFrame): void {
     const probeRadius = 1.0;
-    const hCenter = flightPath.getTerrainHeight(pos.x, pos.z);
-    const hX1 = flightPath.getTerrainHeight(pos.x + probeRadius, pos.z);
-    const hX2 = flightPath.getTerrainHeight(pos.x - probeRadius, pos.z);
-    const hZ1 = flightPath.getTerrainHeight(pos.x, pos.z + probeRadius);
-    const hZ2 = flightPath.getTerrainHeight(pos.x, pos.z - probeRadius);
-    let maxLocalTerrainH = Math.max(hCenter, hX1, hX2, hZ1, hZ2);
-    const weightsCenter = flightPath.getBiomeWeights(pos.x, pos.z);
-    if (hCenter < WATER_LEVEL || weightsCenter.primary === 'SHALLOW_WATERS' || weightsCenter.primary === 'DEEP_WATERS') {
-      maxLocalTerrainH = Math.max(maxLocalTerrainH, WATER_LEVEL);
+    const minClearance = 1.15;
+    const clearance = this.getTerrainClearance(pos.x, pos.y, pos.z, probeRadius, minClearance);
+    if (!clearance.intersects) {
+      return;
     }
 
-    const absoluteMinY = maxLocalTerrainH + 1.2;
-    if (pos.y < absoluteMinY) {
-      pos.y = absoluteMinY;
+    const f = frame || flightPath.getFrame(pos.z);
+    const lateralOffset = (pos.x - f.position.x) * f.right.x + (pos.z - f.position.z) * f.right.z;
+    const absLateral = Math.abs(lateralOffset);
+
+    if (absLateral > 0.05) {
+      const sideSign = Math.sign(lateralOffset);
+      const inwardDir = f.right.clone().multiplyScalar(-sideSign);
+
+      let low = 0;
+      let high = absLateral;
+
+      for (let iter = 0; iter < 10; iter++) {
+        const mid = (low + high) * 0.5;
+        const testX = pos.x + inwardDir.x * mid;
+        const testZ = pos.z + inwardDir.z * mid;
+        const check = this.getTerrainClearance(testX, pos.y, testZ, probeRadius, minClearance);
+        if (check.intersects) {
+          low = mid;
+        } else {
+          high = mid;
+        }
+      }
+
+      const shift = Math.min(absLateral, high + 0.15);
+      pos.addScaledVector(inwardDir, shift);
+    }
+
+    // Floor safety fallback on the flight path
+    const finalCheck = this.getTerrainClearance(pos.x, pos.y, pos.z, 0.8, 1.1);
+    if (finalCheck.intersects) {
+      pos.y = finalCheck.safeY;
     }
   }
 
@@ -671,31 +756,50 @@ export class CinematicCameraDirector {
       // Restore camera.up to world vertical
       this.camera.up.set(0, 1, 0);
 
-      // Cinematic Game Over slow drift / orbit around fallen bird
-      this.gameOverOrbitAngle += delta * 0.45;
-      const orbitDist = 4.2;
-      const orbitHeight = 1.6;
-
-      const orbitPos = birdPos.clone().add(
-        new THREE.Vector3(
-          Math.sin(this.gameOverOrbitAngle) * orbitDist,
-          orbitHeight,
-          Math.cos(this.gameOverOrbitAngle) * orbitDist
-        )
-      );
-
-      // If bird is submerged below water level, keep camera comfortably above the water surface looking down
-      if (birdPos.y < WATER_LEVEL) {
-        orbitPos.y = Math.max(orbitPos.y, WATER_LEVEL + 2.2);
+      if (!this.isDeathCamActive) {
+        this.triggerDeathCamera(birdPos, frame);
       }
 
-      const orbitLook = birdPos.clone().add(new THREE.Vector3(0, 0.3, 0));
+      this.deathCamTimer += delta;
+      const pullProgress = THREE.MathUtils.clamp(this.deathCamTimer / 0.75, 0.0, 1.0);
+      const smoothPull = pullProgress * pullProgress * (3 - 2 * pullProgress);
 
-      this.currentPos.lerp(orbitPos, delta * 2.5);
-      this.currentLookAt.lerp(orbitLook, delta * 3.5);
+      // (3) Camera smoothly pulls to deathHoldPos over 0.75s, then x and z stay strictly fixed while bird continues back
+      this.currentPos.x = THREE.MathUtils.lerp(this.deathCamStartPos.x, this.deathHoldPos.x, smoothPull);
+      this.currentPos.z = THREE.MathUtils.lerp(this.deathCamStartPos.z, this.deathHoldPos.z, smoothPull);
 
-      // Enforce absolute clearance during game-over orbit as well
-      this.enforceAbsoluteTerrainClearance(this.currentPos, frame);
+      // Camera increases in altitude faster than the bird during pull-back before tracking bird altitude
+      const fastAltT = 1.0 - Math.pow(1.0 - pullProgress, 2.5);
+      const altitudeLead = THREE.MathUtils.lerp(0.8, 3.5, fastAltT);
+      const baseCamCeiling = 27.5;
+      const camCeiling = Math.max(baseCamCeiling, birdPos.y + 1.2);
+      const targetCamY = Math.min(birdPos.y + altitudeLead, camCeiling);
+      this.currentPos.y = THREE.MathUtils.lerp(this.currentPos.y, targetCamY, 1.0 - Math.exp(-12.0 * delta));
+
+      // Ensure camera position remains safely above terrain and water at all times
+      const camTerrainH = flightPath.getTerrainHeight(this.currentPos.x, this.currentPos.z);
+      const minCamY = Math.max(camTerrainH, WATER_LEVEL) + 2.5;
+      if (this.currentPos.y < minCamY) {
+        this.currentPos.y = minCamY;
+      }
+
+      // Continuously aim directly at the bird as it flies up and backward
+      this.currentLookAt.lerp(birdPos, 1.0 - Math.exp(-12.0 * delta));
+
+      // Ring collection camera punch & micro-shake decay smoothly if collected on or near crash
+      if (Math.abs(this.ringFovPunch) > 0.01) {
+        this.ringFovPunch = THREE.MathUtils.lerp(this.ringFovPunch, 0, delta * 8.5);
+      }
+      if (this.ringShakeTimer > 0) {
+        this.ringShakeTimer -= delta;
+        const shakeProgress = Math.max(0, this.ringShakeTimer / 0.15);
+        const shakeAmount = Math.sin(this.ringShakeTimer * 65.0) * this.ringShakeIntensity * shakeProgress;
+        this.currentPos.addScaledVector(frame.right, shakeAmount);
+        this.currentPos.addScaledVector(frame.up, shakeAmount * 0.55);
+      }
+
+      this.camera.fov = THREE.MathUtils.lerp(this.camera.fov, 68 + this.ringFovPunch, delta * 3.5);
+      this.camera.updateProjectionMatrix();
     }
 
     this.camera.position.copy(this.currentPos);

@@ -46,7 +46,7 @@ export abstract class Biome {
   }
 
   // --- 1. Path undulation (Flight corridor) ---
-  public abstract getPathUndulation(z: number): number;
+  public abstract getPathUndulation(z: number, x?: number): number;
 
   // --- 2. Natural 3D terrain surface height ---
   public abstract getNaturalTerrainHeight(

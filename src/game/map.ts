@@ -14,7 +14,7 @@
  * 'W' - Deeper Waters (darker water colors representing deeper hidden terrain)
  */
 
-export const rawTerrain = ``;`
+export const rawTerrain = `
 ssssssssssssssss
 ssssssssssssssss
 ssssssssssssssss
@@ -30,6 +30,20 @@ WWWWWWWWWWwwwwww
 wwwwwWWWWWWwwwww
 wwwwwWWWWWWwwwww
 wwwwwWWWWWWwwwww
+ssssssssssssssss
+ssssssssssssssss
+ssssssssssssssss
+ssssssssssssssss
+wwwwwWWWWWWwwwww
+wwwwwWWWWWWwwwww
+wwwwwWWWWWWwwwww
+wwwwwWWWWWWwwwww
+wwwwwWWWWWWwwwww
+wwwwwWWWWWWwwwww
+CCCCCCCCCCCCCCCC
+CCCCCCCCCCCCCCCC
+CCCCCCCCCCCCCCCC
+CCCCCCCCCCCCCCCC
 CCCCCCCCCCCCCCCC
 CCCCCCCCCCCCCCCC
 CCCCCCCCCCCCCCCC
