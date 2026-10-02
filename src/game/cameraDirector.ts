@@ -99,6 +99,10 @@ export class CinematicCameraDirector {
   private deathHoldPos: THREE.Vector3 = new THREE.Vector3();
   private deathCamStartPos: THREE.Vector3 = new THREE.Vector3();
   private deathCamTimer: number = 0;
+  private isDeathTrackingLocked: boolean = false;
+  private lockedDeathPos: THREE.Vector3 = new THREE.Vector3();
+  private lockedDeathLookAt: THREE.Vector3 = new THREE.Vector3();
+  private lockedDeathQuat: THREE.Quaternion = new THREE.Quaternion();
 
   /**
    * Triggers the fly back death camera: pulls backwards and further to the side it is on,
@@ -106,6 +110,7 @@ export class CinematicCameraDirector {
    */
   public triggerDeathCamera(birdPos: THREE.Vector3, frame: PathFrame) {
     this.isDeathCamActive = true;
+    this.isDeathTrackingLocked = false;
     this.isFirstPerson = false;
     this.deathCamTimer = 0;
     this.deathCamStartPos.copy(this.currentPos);
@@ -219,6 +224,7 @@ export class CinematicCameraDirector {
     this.shotTimer = 0;
     this.transitionAlpha = 1.0;
     this.isDeathCamActive = false;
+    this.isDeathTrackingLocked = false;
     this.deathCamTimer = 0;
     this.ringFovPunch = 0;
     this.ringShakeTimer = 0;
@@ -760,31 +766,48 @@ export class CinematicCameraDirector {
         this.triggerDeathCamera(birdPos, frame);
       }
 
-      this.deathCamTimer += delta;
-      const pullProgress = THREE.MathUtils.clamp(this.deathCamTimer / 0.75, 0.0, 1.0);
-      const smoothPull = pullProgress * pullProgress * (3 - 2 * pullProgress);
+      if (!this.isDeathTrackingLocked) {
+        this.deathCamTimer += delta;
+        const pullProgress = THREE.MathUtils.clamp(this.deathCamTimer / 0.75, 0.0, 1.0);
+        const smoothPull = pullProgress * pullProgress * (3 - 2 * pullProgress);
 
-      // (3) Camera smoothly pulls to deathHoldPos over 0.75s, then x and z stay strictly fixed while bird continues back
-      this.currentPos.x = THREE.MathUtils.lerp(this.deathCamStartPos.x, this.deathHoldPos.x, smoothPull);
-      this.currentPos.z = THREE.MathUtils.lerp(this.deathCamStartPos.z, this.deathHoldPos.z, smoothPull);
+        // (3) Camera smoothly pulls to deathHoldPos over 0.75s, then x and z stay strictly fixed while bird continues back
+        this.currentPos.x = THREE.MathUtils.lerp(this.deathCamStartPos.x, this.deathHoldPos.x, smoothPull);
+        this.currentPos.z = THREE.MathUtils.lerp(this.deathCamStartPos.z, this.deathHoldPos.z, smoothPull);
 
-      // Camera increases in altitude faster than the bird during pull-back before tracking bird altitude
-      const fastAltT = 1.0 - Math.pow(1.0 - pullProgress, 2.5);
-      const altitudeLead = THREE.MathUtils.lerp(0.8, 3.5, fastAltT);
-      const baseCamCeiling = 27.5;
-      const camCeiling = Math.max(baseCamCeiling, birdPos.y + 1.2);
-      const targetCamY = Math.min(birdPos.y + altitudeLead, camCeiling);
-      this.currentPos.y = THREE.MathUtils.lerp(this.currentPos.y, targetCamY, 1.0 - Math.exp(-12.0 * delta));
+        // Camera increases in altitude faster than the bird during pull-back before tracking bird altitude
+        const fastAltT = 1.0 - Math.pow(1.0 - pullProgress, 2.5);
+        const altitudeLead = THREE.MathUtils.lerp(0.8, 3.5, fastAltT);
+        const baseCamCeiling = 27.5;
+        const camCeiling = Math.max(baseCamCeiling, birdPos.y + 1.2);
+        const targetCamY = Math.min(birdPos.y + altitudeLead, camCeiling);
+        this.currentPos.y = THREE.MathUtils.lerp(this.currentPos.y, targetCamY, 1.0 - Math.exp(-12.0 * delta));
 
-      // Ensure camera position remains safely above terrain and water at all times
-      const camTerrainH = flightPath.getTerrainHeight(this.currentPos.x, this.currentPos.z);
-      const minCamY = Math.max(camTerrainH, WATER_LEVEL) + 2.5;
-      if (this.currentPos.y < minCamY) {
-        this.currentPos.y = minCamY;
+        // Ensure camera position remains safely above terrain and water at all times
+        const camTerrainH = flightPath.getTerrainHeight(this.currentPos.x, this.currentPos.z);
+        const minCamY = Math.max(camTerrainH, WATER_LEVEL) + 2.5;
+        if (this.currentPos.y < minCamY) {
+          this.currentPos.y = minCamY;
+        }
+
+        // Continuously aim directly at the bird as it flies up and backward
+        this.currentLookAt.lerp(birdPos, 1.0 - Math.exp(-12.0 * delta));
+
+        // Once the bird is 80 meters away from the camera, stop tracking and hold 6-DOF transform (x, y, z, pitch, yaw, roll)
+        const distToBird = this.currentPos.distanceTo(birdPos);
+        if (distToBird >= 80.0) {
+          this.isDeathTrackingLocked = true;
+          this.lockedDeathPos.copy(this.currentPos);
+          this.lockedDeathLookAt.copy(this.currentLookAt);
+          this.camera.position.copy(this.currentPos);
+          this.camera.lookAt(this.currentLookAt);
+          this.lockedDeathQuat.copy(this.camera.quaternion);
+        }
+      } else {
+        // Stop tracking and hold position (x, y, z) and orientation (pitch, yaw, roll)
+        this.currentPos.copy(this.lockedDeathPos);
+        this.currentLookAt.copy(this.lockedDeathLookAt);
       }
-
-      // Continuously aim directly at the bird as it flies up and backward
-      this.currentLookAt.lerp(birdPos, 1.0 - Math.exp(-12.0 * delta));
 
       // Ring collection camera punch & micro-shake decay smoothly if collected on or near crash
       if (Math.abs(this.ringFovPunch) > 0.01) {
@@ -803,6 +826,10 @@ export class CinematicCameraDirector {
     }
 
     this.camera.position.copy(this.currentPos);
-    this.camera.lookAt(this.currentLookAt);
+    if (this.isDeathTrackingLocked) {
+      this.camera.quaternion.copy(this.lockedDeathQuat);
+    } else {
+      this.camera.lookAt(this.currentLookAt);
+    }
   }
 }
