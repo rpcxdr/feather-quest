@@ -254,7 +254,7 @@ export function getBiomeFromMap(
   // As z increases from 0, mapZCoord decreases from mZ towards 0.
   // At z = 0, player is at the bottom edge entering row (mZ - 1).
   let row = Math.floor(mapZCoord);
-  if (row === mZ && z >= 0) {
+  if (row === mZ && z >= -TILE_SIZE) {
     row = mZ - 1;
   }
 

@@ -122,19 +122,22 @@ export const GameCanvas: React.FC = () => {
   useEffect(() => {
     if (!containerRef.current) return;
 
-    const engine = new GameEngine(containerRef.current, {
-      onStateChange: (newState) => {
-        setGameState(newState);
+    const engine = new GameEngine(
+      containerRef.current,
+      {
+        onStateChange: (newState) => {
+          setGameState(newState);
+        },
+        onScoreUpdate: (newScore) => {
+          setScore(newScore);
+        },
+        onStatsUpdate: (newStats) => {
+          setStats(newStats);
+        },
       },
-      onScoreUpdate: (newScore) => {
-        setScore(newScore);
-      },
-      onStatsUpdate: (newStats) => {
-        setStats(newStats);
-      },
-    });
+      cameraMode
+    );
 
-    engine.setCameraMode(cameraMode);
     engineRef.current = engine;
 
     // Handle Window Resize with ResizeObserver

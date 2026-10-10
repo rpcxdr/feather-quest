@@ -2012,7 +2012,6 @@ if (vBeachWave > 0.02) {
     this.resetChunks(startZ, startX);
     this.featherManager.reset(startZ);
     this.setUnchartedLighting(0);
-    this.updateTerrain(startZ, true, 0.016, startX);
     this.spawnInitialObstacles(startZ);
   }
 
@@ -2025,12 +2024,14 @@ if (vBeachWave > 0.02) {
     this.dirLight.color.copy(baseDir).lerp(goldDir, ratio);
     this.dirLight.intensity = THREE.MathUtils.lerp(1.25, 1.45, ratio);
 
-    const baseSky = new THREE.Color(0xbfe3f7);
-    const goldSky = new THREE.Color(0xfddaa0);
-    const skyCol = baseSky.clone().lerp(goldSky, ratio * 0.65);
-    this.scene.background = skyCol;
-    if (this.scene.fog) {
-      this.scene.fog.color.copy(skyCol);
+    if (ratio > 0.001) {
+      const baseSky = new THREE.Color(0xbfe3f7);
+      const goldSky = new THREE.Color(0xfddaa0);
+      const skyCol = baseSky.clone().lerp(goldSky, ratio * 0.65);
+      this.scene.background = skyCol;
+      if (this.scene.fog) {
+        this.scene.fog.color.copy(skyCol);
+      }
     }
   }
 }

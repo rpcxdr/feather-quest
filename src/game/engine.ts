@@ -119,9 +119,14 @@ export class GameEngine {
   // Boundary enforcement tracker for levels with forced return turns
   private lastEnforcedLevel: number = -1;
 
-  constructor(container: HTMLElement, callbacks: GameEngineCallbacks) {
+  constructor(
+    container: HTMLElement,
+    callbacks: GameEngineCallbacks,
+    initialCameraMode: CameraMode = 'THIRD_PERSON'
+  ) {
     this.container = container;
     this.callbacks = callbacks;
+    this.cameraMode = initialCameraMode;
 
     // Load High Score
     try {
@@ -152,7 +157,7 @@ export class GameEngine {
     this.renderer.setSize(width, height);
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.05;
     this.renderer.domElement.style.display = 'block';
@@ -162,6 +167,9 @@ export class GameEngine {
 
     // Camera Director
     this.cameraDirector = new CinematicCameraDirector(64, width / height);
+    if (this.cameraMode === 'FIRST_PERSON') {
+      this.cameraDirector.setFirstPerson(true);
+    }
 
     // Environment (Pipes, Terrain, Clouds, Trees, Lights)
     this.environment = new EnvironmentManager(this.scene);
@@ -354,9 +362,10 @@ export class GameEngine {
       this.activeBranch
     );
     this.bird.setFirstPerson(this.cameraMode === 'FIRST_PERSON');
+    this.cameraDirector.setFirstPerson(this.cameraMode === 'FIRST_PERSON');
     this.environment.updateTerrain(
       this.startDistance,
-      true,
+      false,
       0.016,
       this.startX,
       birdPos.y,
@@ -442,8 +451,11 @@ export class GameEngine {
   }
 
   public setCameraMode(mode: CameraMode) {
-    this.cameraMode = mode;
     const isFP = mode === 'FIRST_PERSON';
+    if (this.cameraMode === mode && this.cameraDirector.getIsFirstPerson() === isFP) {
+      return;
+    }
+    this.cameraMode = mode;
     this.cameraDirector.setFirstPerson(isFP);
     this.bird.setFirstPerson(isFP);
     this.callbacks.onCameraChange?.(this.cameraDirector.getCurrentShotName());

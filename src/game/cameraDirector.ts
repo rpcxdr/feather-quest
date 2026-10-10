@@ -151,10 +151,9 @@ export class CinematicCameraDirector {
   }
 
   public setFirstPerson(enabled: boolean) {
+    if (this.isFirstPerson === enabled) return;
     this.isFirstPerson = enabled;
-    if (!enabled) {
-      this.transitionAlpha = 0.0;
-    }
+    this.transitionAlpha = 1.0;
   }
 
   public getIsFirstPerson(): boolean {
